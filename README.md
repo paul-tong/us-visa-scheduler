@@ -2,447 +2,327 @@
 
 [简体中文](README.zh-CN.md)
 
-A local Windows application for monitoring the normal U.S. visa scheduling UI and
-optionally making **one guarded rescheduling submission** for an existing Wuhan
-B1/B2 or B2 appointment. Monitoring is the default; booking must be enabled explicitly.
+A local Windows application that monitors the U.S. visa scheduling website for
+Wuhan B1/B2 or B2 interview dates. It can optionally make **one guarded rescheduling
+submission** for an existing appointment. Monitoring is enabled by default;
+automatic rescheduling must be explicitly enabled.
 
-**Important:** the saved sign-in page prohibits automated access. Use automation
-only where permitted by the service provider. No polling interval, browser mode,
-or CAPTCHA helper guarantees access or prevents account restrictions.
+Use automation only where the service provider permits it. The tool does not
+guarantee access, CAPTCHA completion, avoidance of account restrictions, or a
+successful booking. It is not a general-purpose booking service.
 
-## What it does
+## Features
 
-- Enters through `https://www.usvisascheduling.com/zh-CN/SignIn`, fills credentials
-  only on the expected authentication host, and matches the displayed security
-  questions to locally configured answers (including question pairs 1/3 and 2/3).
-- Optionally attempts a compatible SeleniumBase UC GUI verification interaction on an
-  authentication page, once per challenge episode within a configurable per-run cap.
-  If unsuccessful, disabled, exhausted or unsafe, emails you and pauses for
-  manual verification in the same browser. It never uses an external CAPTCHA solver.
-- On the home page, clicks **only** the validated reschedule link. Checks the
-  displayed visa class/post, exact applicant group, and existing appointment.
-- Waits `CLICK_WAIT_SECONDS` before each post-login UI action and revalidates the
-  context/target afterward. Login, security answers and verification are not delayed.
-- Observes all dates returned by the site's normal schedule-day request, not just
-  the two visible calendar months. No direct/private API replay is used.
-- Applies inclusive date ranges in your priority order; within the first matching
-  range, chooses the earliest date. Gaps between ranges remain excluded.
-- In monitor-only mode, never clicks a day, time slot, or Submit. In booking mode,
-  selects only a preferred day and the first enabled time row with sufficient
-  capacity, then revalidates the complete selection.
-- Writes a permanent submission latch **before** dispatching Submit. Observes the
-  result for 90 seconds, sends an outcome email, closes the owned browser, and stops.
-  Exceptions, timeouts, email failures, or restarts do not authorize a second submission.
-- Handles detected access restrictions with persisted cooldowns and at most three
-  recovery retries after the initial failure. Other unexpected errors stop the task.
-- Writes daily structured event, availability, and booking logs. Sends preferred
-  availability, daily status, manual-verification, restriction, error, and booking emails.
+- Automatic credential entry and matching of the two displayed security questions
+  against a locally configured question/answer map.
+- Bounded, best-effort GUI verification with email-notified manual fallback.
+- Availability monitoring through the normal website UI, including all dates
+  returned by the observed response rather than only visible calendar months.
+- Ordered, inclusive date preferences. Unpreferred dates are logged, never selected.
+- Monitor-only mode that never selects a date, time slot or Submit.
+- Existing-appointment, applicant, visa-class and Wuhan-post checks; only the
+  verified reschedule link is used on the home page.
+- Post-login click pacing, randomized observation pauses and bounded recovery.
+- A persistent one-submission guard, a 90-second result-observation window,
+  local daily logs and SMTP notifications.
 
-**Not guaranteed:** successful CAPTCHA completion; no account block; server-side
-rescheduling quota accounting; atomic replacement/preservation of the old appointment;
-slot availability until submission; or email inbox delivery. Unknown booking outcomes
-are reported as **UNKNOWN**, never assumed failed or successful.
+New appointments, other consulates, OFC/biometrics scheduling, cancellation and
+application replacement are not supported. The client never invokes cancellation;
+server-side preservation of the old appointment and rescheduling quota accounting
+cannot be guaranteed.
 
-## Requirements and installation (Windows PowerShell)
+## Requirements
 
-Use an interactive Windows desktop with Google Chrome installed. The validated
-environment used Python 3.9.13; Python 3.9+ is supported by the pinned SeleniumBase
-release. Do not silently upgrade dependencies during a monitored run.
+- Windows with an interactive desktop and Google Chrome installed.
+- PowerShell 7 or Windows PowerShell 5.1.
+- Python on `PATH`, with `venv` and `pip`, compatible with `requirements.txt`.
+  The pinned dependencies were originally exercised on Python 3.9.13; not every
+  newer Python/Chrome combination has been tested.
+- An existing Wuhan visitor-visa appointment and an SMTP account.
+- Network access for package installation, initial ChromeDriver provisioning,
+  email delivery and website access.
+
+The launcher does not install Python or Chrome, change execution policy, or request
+administrator access. Follow the local execution policy when running scripts.
+Dependencies are pinned in `requirements.txt`; the launcher does not use `--upgrade`.
+
+## Quick start
+
+### 1. Create a private launcher
+
+Open PowerShell in the cloned project root. Replace the example path below:
 
 ```powershell
-Set-Location C:\src\USVisa\us-visa-scheduler
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m pip check
+Set-Location 'C:\path\to\us-visa-scheduler'
+New-Item -ItemType Directory -Force .\personal | Out-Null
+if (-not (Test-Path .\personal\Set-VisaEnvironment.local.ps1)) {
+    Copy-Item .\Set-VisaEnvironment.template.ps1 .\personal\Set-VisaEnvironment.local.ps1
+}
+notepad .\personal\Set-VisaEnvironment.local.ps1
 ```
 
-Activation is unnecessary. Requirements pin SeleniumBase 4.51.12 with its
-PyAutoGUI extra, and PyAutoGUI 0.9.54. SeleniumBase resolves the Selenium version
-for your Python version and may download a matching ChromeDriver on first use.
-Installation and driver provisioning require network access.
+Edit the **CUSTOMIZATION** section: credentials, exact security questions/answers,
+applicant names, current appointment, preferred ranges and notification settings.
+Replace every placeholder and expired example date. Keep `VISA_AUTO_BOOKING`
+set to `'false'` initially.
 
-## Configure the beginning of `main.py`
+Credentials are literal strings; no password or security-answer prompts appear.
+Inside single-quoted PowerShell strings, escape an apostrophe by doubling it:
+`'example''s answer'`. Question text and answers can contain Chinese characters.
+Save the script in an encoding supported by the selected PowerShell host; use
+UTF-8 with BOM for non-ASCII text when also using Windows PowerShell 5.1.
 
-All 25 settings in the configuration and operational-budget tables below read
-environment variables first. If a variable is
-absent, the second argument of its `os.environ.get(...)` expression in `main.py`
-is the fallback. Edit that fallback if needed without removing the environment
-lookup. Existing environment values win over file edits. Settings are loaded when
-Python starts; changing the shell afterward does not change a running process.
+The private file contains plaintext secrets. `personal/` and
+`Set-VisaEnvironment.local.ps1` are git-ignored, not encrypted. Protect local access
+and never commit real credentials into the tracked template.
 
-Environment values are strings. `build_config()` converts booleans, integers, and
-JSON into the correct types before validation. Invalid or present-but-empty
-structured values cause an explicit error rather than silently using a fallback.
-In particular, `"false"` does **not** enable booking.
+### 2. Run the launcher
 
-| Property | Environment variable | Format / fallback when absent |
+From the **project root**, not the `personal` directory:
+
+```powershell
+pwsh -File .\personal\Set-VisaEnvironment.local.ps1
+```
+
+Windows PowerShell users can run:
+
+```powershell
+powershell.exe -File .\personal\Set-VisaEnvironment.local.ps1
+```
+
+The launcher:
+
+1. Displays a project-root reminder and validates the current working directory.
+2. Creates `.venv` if absent, or reuses its existing Python executable.
+3. Runs `pip install -r requirements.txt` and `pip check` using that executable.
+4. Loads the customization into its process environment without printing secrets.
+5. Displays the menu and runs exactly one selected mode.
+
+| Selection | Python command | Effect |
 |---|---|---|
-| `USERNAME` | `VISA_USERNAME` | String; empty fallback. |
+| `1` or Enter | `main.py --check-config` | Validate settings without SMTP, browser access or application-state creation. |
+| `2` | `main.py --test-email` | Send one explicit test email; no visa-site access. |
+| `3` | `main.py` | Start monitoring, or guarded rescheduling if enabled. |
+
+Type the number and press Enter. Invalid choices are requested again; the default
+is offline validation, never booking. **Installation precedes the menu and can use
+the network even when selecting option 1.** Setup failures stop before the menu or
+scheduler. A broken existing `.venv` is reported rather than silently replaced.
+The selected application's exit code is returned; failed runs are not retried.
+
+Python is launched by the configured PowerShell process, so `pwsh -File ...` works
+without copying variables back into the parent terminal. No separate activation,
+installation commands or Python command is required for this workflow.
+
+Existing private copies are not automatically updated. When upgrading, merge their
+customization into a fresh copy of the current template; do not overwrite secrets
+or assume an old setup-only script contains the new launcher.
+
+## Configuration reference
+
+The launcher explicitly sets all 25 variables from its customization section,
+overriding inherited values for those names in its own process. Python reads
+environment values first; an absent variable uses the corresponding fallback at
+the top of `main.py`. Present-but-empty or malformed structured values fail rather
+than falling back silently. Settings are loaded when Python starts.
+
+### Account, appointment and email
+
+| Property | Environment variable | Format / fallback |
+|---|---|---|
+| `USERNAME` | `VISA_USERNAME` | Visa username; empty Python fallback. |
 | `PASSWORD` | `VISA_PASSWORD` | Visa password; empty fallback. |
-| `SECURITY_ANSWERS` | `VISA_SECURITY_ANSWERS` | JSON question-to-answer object; fallback map in `main.py`, initially empty. Replaces the whole map, not a merge. |
-| `EXPECTED_APPLICANTS` | `VISA_APPLICANTS` | Exact names separated by `;`; empty list fallback. |
-| `EXPECTED_VISA_CLASS` | `VISA_VISA_CLASS` | `B1/B2` or `B2`; fallback `B1/B2`. |
-| `EXPECTED_EXISTING_APPOINTMENT` | `VISA_EXISTING_APPOINTMENT` | Beijing ISO datetime; empty fallback. |
-| `PREFERRED_DATE_RANGES` | `VISA_PREFERRED_DATE_RANGES` | JSON array of `[start, end]` pairs; example ranges in `main.py` are the fallback. |
+| `SECURITY_ANSWERS` | `VISA_SECURITY_ANSWERS` | JSON question-to-answer object; fallback map initially empty. The template converts its PowerShell map to JSON. |
+| `EXPECTED_APPLICANTS` | `VISA_APPLICANTS` | Exact applicant names separated by `;`; empty fallback. |
+| `EXPECTED_VISA_CLASS` | `VISA_VISA_CLASS` | Exact displayed `B1/B2` or `B2`; fallback `B1/B2`. |
+| `EXPECTED_EXISTING_APPOINTMENT` | `VISA_EXISTING_APPOINTMENT` | Current appointment's Beijing-local ISO datetime, e.g. `2030-01-15T10:00:00`; empty fallback. |
+| `PREFERRED_DATE_RANGES` | `VISA_PREFERRED_DATE_RANGES` | JSON array of `[start, end]` date pairs, most preferred first; replace example ranges. |
 | `AUTO_BOOKING` | `VISA_AUTO_BOOKING` | `true`/`false` or `1`/`0`, case-insensitive; fallback `False`. |
-| `DAILY_EMAIL_TIMES` | `VISA_DAILY_EMAIL_TIMES` | JSON array of three Beijing HH:MM strings; fallback `["08:00","12:00","17:00"]`. |
-| `SMTP_HOST` | `VISA_SMTP_HOST` | Hostname; fallback `smtp.gmail.com`. |
-| `SMTP_PORT` | `VISA_SMTP_PORT` | Integer string; fallback `465` (implicit TLS). |
-| `SMTP_USERNAME` | `VISA_EMAIL_SENDER` | Full sending email address; empty fallback. |
+| `DAILY_EMAIL_TIMES` | `VISA_DAILY_EMAIL_TIMES` | Exactly three distinct Beijing HH:MM times; fallback `["08:00","12:00","17:00"]`. |
+| `SMTP_HOST` | `VISA_SMTP_HOST` | SMTP hostname; fallback `smtp.gmail.com`. |
+| `SMTP_PORT` | `VISA_SMTP_PORT` | Implicit TLS port; fallback `465`. |
+| `SMTP_USERNAME` | `VISA_EMAIL_SENDER` | Full sending address; empty fallback. |
 | `SMTP_PASSWORD` | `VISA_SMTP_PASSWORD` | SMTP app password; empty fallback. |
 | `EMAIL_TO` | `VISA_EMAIL_TO` | Recipient address; empty fallback. |
 
-Do not put real secrets in tracked source files. Environment variables are local
-process inputs, **not an encrypted secret vault**; protect the machine/session.
-All eleven operational budgets below follow the same environment-first rule.
+Use exact displayed security-question text. The JSON map replaces the fallback map,
+not merges with it; duplicate keys, unknown questions and invalid shapes fail closed.
+For preferred dates, the first range with availability wins, then its earliest date.
+Range endpoints are inclusive; gaps remain excluded. The existing-appointment
+timestamp is a safety check, not a desired target.
 
-### Process-scoped PowerShell template (recommended)
+For Gmail, use `smtp.gmail.com:465`, a full Gmail sender address and a Google app
+password, not the normal account password. App-password availability depends on
+Google account policy and two-step verification. This implementation uses implicit
+TLS and password-based SMTP, not STARTTLS/587 or OAuth. SMTP acceptance does not
+guarantee inbox delivery.
 
-```powershell
-Copy-Item .\Set-VisaEnvironment.template.ps1 .\Set-VisaEnvironment.local.ps1
-# Edit the .local.ps1 copy: names, exact question texts, dates, email addresses.
-# It prompts for visa password, three answers, and SMTP app password without echo.
-. .\Set-VisaEnvironment.local.ps1
-.\.venv\Scripts\python.exe main.py --check-config
-```
-
-The template has a comment/example for every property. It writes **Process only**,
-as requested: no User/Machine environment registry updates and no administrator
-access. It sets all 25 values after collecting the inputs. Launch Python
-from this same PowerShell window; closing it discards these settings. Running the
-script in a separate `powershell.exe` process cannot update the parent shell.
-The `.local.ps1` copy is ignored by git. Do not commit credentials in the template.
-For an existing local copy, merge the new budget entries from the template rather
-than overwriting your customized file. Existing process environment values take
-precedence over changed `main.py` fallbacks; restart Python after changing them.
-
-### Authentication, identity, and existing appointment
-
-```powershell
-$env:VISA_USERNAME = 'your-username'
-$env:VISA_PASSWORD = [System.Net.NetworkCredential]::new(
-    '', (Read-Host 'Visa password' -AsSecureString)).Password
-$env:VISA_APPLICANTS = 'Exact displayed applicant name'
-# Multiple applicants: exact names separated with semicolons.
-$env:VISA_VISA_CLASS = 'B1/B2'
-$env:VISA_EXISTING_APPOINTMENT = '2030-01-15T10:00:00'
-```
-
-Replace the example timestamp with your **actual current appointment**, in Beijing
-time. It is an identity/safety check, not a target date. The tool expects one
-consular appointment entry; unsupported group/appointment layouts fail closed.
-Set `VISA_VISA_CLASS` to the exact home-page value (`B1/B2` or `B2`).
-
-The environment question map has this JSON structure (illustrative values only;
-use the template's masked prompts for real answers):
-
-```json
-{"Exact question text 1":"answer1","Exact question text 2":"answer2","Exact question text 3":"answer3"}
-```
-
-Use exact displayed Chinese/English question text; explicit language aliases are
-allowed. JSON supports Unicode and escaped quotes/backslashes. Duplicate object
-keys, non-string answers and wrong shapes are rejected. The fallback map can still
-reference individual answer variables such as `VISA_ANSWER_1`; those matter only
-when no `VISA_SECURITY_ANSWERS` object overrides it. Whitespace/Unicode normalization
-is applied to questions, but unrelated questions are never guessed.
-Missing/unknown questions stop the run.
-There is a persisted **local cap of two credential submissions per Beijing day**;
-this is not a claim about the website's undisclosed daily allowance.
-
-### Preferences and notifications
-
-```powershell
-$env:VISA_PREFERRED_DATE_RANGES = '[["2026-12-01","2026-12-15"],["2026-12-22","2026-12-25"]]'
-$env:VISA_AUTO_BOOKING = 'false'
-$env:VISA_DAILY_EMAIL_TIMES = '["08:00","12:00","17:00"]'
-```
-
-Replace expired examples before running. Startup rejects reversed/past ranges;
-during monitoring, past days are not chosen. Put the most important range first,
-even if it is later chronologically. Monitor-only mode still sends preferred-date
-emails. There is no selection-based "dry run": disabled booking is truly no-click.
-
-### Gmail sending configuration
-
-Use your full Gmail address and a Google-generated app password, not your usual
-Google password. App passwords require Google 2-Step Verification; account policies
-may make them unavailable. This application uses password-based SMTP, not OAuth.
-If app passwords are unavailable, do not substitute your normal account password.
-
-```powershell
-$env:VISA_SMTP_HOST = 'smtp.gmail.com'
-$env:VISA_SMTP_PORT = '465'
-$env:VISA_EMAIL_SENDER = 'your.name@gmail.com'
-$env:VISA_EMAIL_TO = 'destination@example.com'
-$env:VISA_SMTP_PASSWORD = [System.Net.NetworkCredential]::new(
-    '', (Read-Host 'Gmail app password' -AsSecureString)).Password
-.\.venv\Scripts\python.exe main.py --test-email
-```
-
-Gmail's implicit TLS endpoint is `smtp.gmail.com:465`; STARTTLS/587 is not
-implemented here. Enter the 16-character app password without display-grouping
-spaces. The recipient may be the same Gmail address. The fallback host/port in
-`main.py` already target Gmail; sender, app password and recipient must be supplied.
-A notification-preflight email must be accepted before the browser opens.
-SMTP acceptance does not guarantee delivery to the inbox.
-
-Google references: `https://developers.google.com/workspace/gmail/imap/imap-smtp`
+Official references:
+`https://developers.google.com/workspace/gmail/imap/imap-smtp`
 and `https://support.google.com/accounts/answer/185833`.
 
 ### Operational budgets
 
-These are local limits, not published website quotas or guaranteed safe settings.
-Every numeric budget is an integer; polling bounds, cooldown, check budget and
-timeouts must be positive. Click delay and helper cap may be zero; retries are 0-3.
+These are local limits, not published website quotas or guaranteed safe rates.
+All numeric values are integers; timeouts, cooldown, observation count and polling
+bounds must be positive. Click delay and helper cap may be zero; retries are 0-3.
 
-| Setting | Environment variable | Conservative fallback | Meaning |
+| Property | Environment variable | Default | Meaning |
 |---|---|---:|---|
-| `CLICK_WAIT_SECONDS` | `VISA_CLICK_WAIT_SECONDS` | 5 | Seconds before each post-login UI action, not just once after login. Zero disables pacing. See scope below. |
+| `CLICK_WAIT_SECONDS` | `VISA_CLICK_WAIT_SECONDS` | 5 | Wait before each covered post-login UI action; zero disables pacing. |
 | `POLL_SECONDS_MIN` | `VISA_POLL_SECONDS_MIN` | 1800 | Inclusive minimum random pause after a completed observation. |
-| `POLL_SECONDS_MAX` | `VISA_POLL_SECONDS_MAX` | 3600 | Inclusive maximum pause; must be at least the minimum. Work adds to the interval. |
-| `BLOCK_COOLDOWN_SECONDS` | `VISA_BLOCK_COOLDOWN_SECONDS` | 86400 | Restriction fallback wait (24 hours); a longer observed `Retry-After` wins. Persisted across restarts; not a verified reset period. |
-| `MAX_RECOVERY_RETRIES` | `VISA_MAX_RECOVERY_RETRIES` | 3 | Additional recovery cycles after the initial restriction, persisted for the task. Zero stops on the first restriction. Never retries a booking submission. |
-| `MAX_CHECKS_PER_RUN` | `VISA_MAX_CHECKS_PER_RUN` | 24 | Successful observations for the persistent task. Despite the historical name, restarts do not reset it. One observation can cause multiple HTTP requests. |
-| `AUTO_VERIFICATION` | `VISA_AUTO_VERIFICATION` | `True` | Enables only the best-effort Cloudflare GUI helper. `false` or `0` disables it, not automatic credentials/security answers. A persistent challenge then triggers emailed manual handoff. |
-| `MAX_AUTO_VERIFICATIONS` | `VISA_MAX_AUTO_VERIFICATIONS` | 1 | Helper-invocation cap across challenge episodes in this process run. Zero disables automatic attempts; 10 is accepted. At most one invocation per episode, then manual fallback if unresolved. |
-| `MANUAL_VERIFICATION_TIMEOUT_SECONDS` | `VISA_MANUAL_VERIFICATION_TIMEOUT_SECONDS` | 900 | Manual-handoff deadline (15 minutes), beginning before the notification is sent. Resume on a recognized next page; otherwise stop. Separate from the helper's up-to-60-second result grace period. |
-| `PAGE_TIMEOUT_SECONDS` | `VISA_PAGE_TIMEOUT_SECONDS` | 45 | Normal page/navigation/response wait, not a polling interval. The worker watchdog adds command overhead and applicable click delays. Does not change the fixed post-submit 90-second observation. |
-| `QUEUE_TIMEOUT_SECONDS` | `VISA_QUEUE_TIMEOUT_SECONDS` | 1800 | Maximum seconds per waiting-room episode (30 minutes). Let the website refresh itself; do not force refreshes. Timeout stops/notifies. |
+| `POLL_SECONDS_MAX` | `VISA_POLL_SECONDS_MAX` | 3600 | Inclusive maximum pause, at least the minimum. Equal bounds produce a fixed pause. |
+| `BLOCK_COOLDOWN_SECONDS` | `VISA_BLOCK_COOLDOWN_SECONDS` | 86400 | Restriction fallback wait; a longer observed `Retry-After` wins. Persisted across restarts. |
+| `MAX_RECOVERY_RETRIES` | `VISA_MAX_RECOVERY_RETRIES` | 3 | Additional recovery cycles after the initial restriction; persisted per task. Never retries Submit. |
+| `MAX_CHECKS_PER_RUN` | `VISA_MAX_CHECKS_PER_RUN` | 24 | Successful observations for the persistent task; despite the name, restarts do not reset it. |
+| `AUTO_VERIFICATION` | `VISA_AUTO_VERIFICATION` | `True` | Enables the GUI verification helper only. False leaves credentials/answers automated but uses manual challenge fallback. |
+| `MAX_AUTO_VERIFICATIONS` | `VISA_MAX_AUTO_VERIFICATIONS` | 1 | Helper calls across challenge episodes in one process. Zero disables attempts; at most one call per episode before fallback. |
+| `MANUAL_VERIFICATION_TIMEOUT_SECONDS` | `VISA_MANUAL_VERIFICATION_TIMEOUT_SECONDS` | 900 | Manual-handoff deadline, starting before notification delivery. |
+| `PAGE_TIMEOUT_SECONDS` | `VISA_PAGE_TIMEOUT_SECONDS` | 45 | Normal page/response wait; worker timeouts additionally allow click delays and command overhead. |
+| `QUEUE_TIMEOUT_SECONDS` | `VISA_QUEUE_TIMEOUT_SECONDS` | 1800 | Wait per website waiting-room episode; no forced refresh. |
 
-**Verification semantics.** `AUTO_VERIFICATION=False` or `MAX_AUTO_VERIFICATIONS=0`
-means no tool-driven CAPTCHA interaction. A challenge that clears itself can still
-proceed; otherwise you receive a manual-verification email. If enabled, a refused
-or unsafe helper invocation still consumes one count. The cap resets when a new
-process starts, not on each retry or login. It limits helper calls, not physical
-clicks, internal reloads or HTTP requests. A cap of 10 does **not** retry one checkbox
-ten times. After one invocation, the tool checks for a recognized next page; an
-unresolved challenge uses the bounded manual fallback. Worker loss instead stops
-and sends an action-required notice. No helper is invoked after a possible submission.
+Pacing starts only after validating the authenticated home page. It covers
+Reschedule, post/calendar dropdown selections, preferred date, time slot and
+Submit. Targets/context are rechecked after each pause. Authentication, CAPTCHA
+interaction and read-only result checks are not delayed by this setting.
 
-**Click-delay scope.** Pacing is armed only after validating the authenticated visa
-home page. It applies before the home Reschedule link, both post-dropdown selections,
-calendar year/month selections, the preferred date, the first usable time slot, and
-Submit. It does not delay human verification, credential/security-question controls,
-read-only checks or result polling, and does not add forced page refreshes.
-Each action records `CLICK_WAIT` with `target_action` and `delay_seconds`; context
-and targets are re-read after the pause. A changed date, applicant, existing booking
-or Submit selection fails closed rather than using a stale target. Missing slots
-are not submitted. During worker waits, the parent continues normal heartbeats.
-The 90-second result window begins after the Submit command returns or raises, so
-the pre-click pause and command latency cannot consume that window. Ambiguous
-dispatch still leaves the permanent latch and never retries.
+Each continuing observation samples a fresh integer pause. Processing time adds
+to the interval: `300-600` seconds does not guarantee observations within ten minutes.
+Faster polling, larger check budgets or more helper calls increase activity and
+are not a way to bypass restrictions. Cooldowns, verification deadlines and the
+90-second result window are not randomized.
 
-After each completed observation, if another check is permitted, the scheduler
-samples a fresh integer uniformly from `[POLL_SECONDS_MIN, POLL_SECONDS_MAX]`.
-Both endpoints are possible and consecutive samples may repeat. The default is
-30-60 minutes. The delay starts after that cycle's work finishes; time between
-observation starts also includes the work itself. Empty results and monitor-only
-checks use the same policy.
+The helper cap counts invocations, including refused/unsafe calls, not internal
+clicks or requests. A cap of 10 does not retry the same checkbox ten times.
+Unresolved challenges use the emailed manual handoff; automatic interaction has
+an independent up-to-60-second result observation. Verification is forbidden after
+a possible booking submission. There is also a persisted local cap of two
+credential submissions per Beijing day, independent of website limits.
 
-```powershell
-$env:VISA_POLL_SECONDS_MIN = '1800'
-$env:VISA_POLL_SECONDS_MAX = '3600'
-```
-
-Both bounds must be positive integers and minimum must not exceed maximum.
-Set both to `1800` for the previous fixed 30-minute delay. `POLL_SECONDS` has been
-removed; update existing local setup-script copies to use the two new variables.
-An unset bound uses its own `main.py` fallback; an empty/invalid value is rejected.
-No persisted task state needs migration or removal.
-
-Each selected delay is recorded in `EventLog` as `POLL_WAIT`, with `delay_seconds`,
-`minimum_seconds`, and `maximum_seconds`. No polling delay is sampled after a
-submission or once the check budget is exhausted. Restriction cooldowns,
-`Retry-After`, verification deadlines, the 90-second result window, and the three
-Beijing daily email times are **not randomized**. Heartbeat logging/email work
-continues during polling waits. Randomization is not a guarantee against blocking.
-
-#### Active observation profile
-
-Your proposed values are **valid configuration**, but are not an established safe
-website rate. `300-600` means 5-10 minutes of sleep, **not** strictly less than ten
-minutes between observations. Click waits, network work, authentication, queueing
-and email work add time.
-
-If active observation is permitted, a more restrained starting example is:
-
-```powershell
-$env:VISA_CLICK_WAIT_SECONDS = '3'
-$env:VISA_POLL_SECONDS_MIN = '300'
-$env:VISA_POLL_SECONDS_MAX = '540'
-$env:VISA_BLOCK_COOLDOWN_SECONDS = '86400'
-$env:VISA_MAX_RECOVERY_RETRIES = '3'
-$env:VISA_MAX_CHECKS_PER_RUN = '24'
-$env:VISA_AUTO_VERIFICATION = 'true'
-$env:VISA_MAX_AUTO_VERIFICATIONS = '1'
-$env:VISA_MANUAL_VERIFICATION_TIMEOUT_SECONDS = '900'
-$env:VISA_PAGE_TIMEOUT_SECONDS = '45'
-$env:VISA_QUEUE_TIMEOUT_SECONDS = '1800'
-```
-
-The 5-9-minute pause leaves some headroom, but still cannot guarantee a sub-10-minute
-interval. Conservative defaults in `main.py` and the template remain unchanged.
-
-| Your proposed value | Assessment |
-|---|---|
-| Click delay `3` | Supported before each post-login action; may reduce action frequency but cannot prevent blocking. |
-| Poll `300-600` | Supported; use `300-540` only as an active starting example, not a rate-limit bypass or guarantee. |
-| Cooldown `7200` | Supported, but two hours is not a verified account-unblock/reset duration. Retain `86400` initially; longer server waits prevail. |
-| Checks `150` | Much larger exposure. 150 successful checks involve 149 pauses: 12 h 25 min-24 h 50 min at 300-600 seconds, plus processing. A check is not one request; local login/recovery limits may stop earlier. |
-| Automatic verification `True`, cap `10` | Supported across separate episodes. Start with cap `1`; repeated challenges are not a reason to run ten rapid helper retries. |
-| Retries `3`; manual/page/queue `900/45/1800` | Match the conservative defaults. Retries concern restrictions, never rescheduling dispatch. |
-
-No undocumented website quota or challenge acceptance threshold is assumed.
-Cloudflare documents automated production challenge solving as unsupported:
-`https://developers.cloudflare.com/cloudflare-challenges/reference/supported-browsers/`.
-
-Detected page-view warnings are treated as restrictions. A cooldown performs no
-scheduling queries; it does not erase server-side account state. A recovery cycle
-may include normal navigation/authentication requests. The maximum is not three
-requests at HTTP level. The local check/login budgets can stop the task earlier.
-
-## Run
-
-```powershell
-.\.venv\Scripts\python.exe main.py --check-config
-.\.venv\Scripts\python.exe main.py --test-email
-.\.venv\Scripts\python.exe main.py
-```
-
-`--check-config` is offline and does not create state or open a browser.
-`--test-email` sends one explicit email and never accesses the visa site.
-The normal command first validates configuration, acquires the project instance
-lock, checks durable stop/latch state, and tests email delivery.
-
-Start with `VISA_AUTO_BOOKING = 'false'` (the file fallback is also `False`).
-Set the environment value to `'true'` only after reviewing the
-configuration, permission to automate, and the risks/limits above. No live booking
-is needed to run the included tests.
-
-The browser is forced to `Asia/Shanghai` time and checked before selections.
-Keep it visible for GUI verification; do not minimize it or compete for input.
-An unsafe/obscured/non-foreground window requires manual fallback. The helper is
-limited to authentication pages, not an already selected booking screen.
-
-If manual verification is requested, complete only verification in the existing
-window. The tool pauses browser actions, emails a deadline, and resumes only when
-an expected next state is detected. Do not change appointments or click Submit
-yourself in that window. If the helper hangs, its owned process tree is terminated
-and the run stops; that case cannot preserve the browser for same-window fallback.
-
-The process owns an isolated browser worker. On Windows, a kill-on-close Job
-Object contains that worker and its Chrome descendants; unrelated Chrome windows
-are not targeted. If the task is run as a scheduled job, it needs an interactive,
-unlocked user session for GUI operations.
-
-## Workflow and result semantics
+## Workflow and safety
 
 ```text
-Validate -> instance lock + durable state -> email preflight -> sign in
-  -> automatic verification / emailed manual fallback -> answer questions
-  -> validate home -> only Reschedule -> validate existing booking and applicants
-  -> normal post selection -> observe complete returned dates -> logs + emails
-  -> no match / monitor-only: wait and repeat within budgets
-  -> preferred day: choose first usable time row -> final validation
-  -> persist submission latch -> Submit once -> observe 90 seconds
-  -> SUCCESS / FAILURE / UNKNOWN -> outcome email -> close browser -> stop
+Launcher: verify root -> create/reuse venv -> install/check -> configure -> select mode
+Scheduler: validate -> instance lock and durable state -> email preflight -> sign in
+  -> verification / manual fallback -> answer questions -> validate home
+  -> Reschedule only -> validate applicants and existing appointment -> observe dates
+  -> no match / monitor-only: log, notify, wait and repeat within budgets
+  -> preferred day: first usable time slot -> revalidate -> persist submission latch
+  -> Submit once -> observe for 90 seconds -> report outcome -> close browser -> stop
 ```
 
-SUCCESS requires the site's `AllScheduled` response correlated with the requested
-date/entry, not merely a title/redirect. FAILURE requires an explicit error
-response. Missing/conflicting evidence is UNKNOWN. A stale selection or changed
-application stops before dispatch. If the preferred day has no usable time row,
-that observation makes no submission; monitoring continues.
+The first usable time row must have sufficient capacity for all expected applicants.
+If none remains, no submission is made. SUCCESS requires the site's `AllScheduled`
+response correlated with the requested date/entry; explicit rejection is FAILURE;
+missing or conflicting evidence is UNKNOWN. A redirect or title alone is not proof.
 
-After Submit might have started, there is **no** challenge handling, refresh,
-reauthentication, cancellation, or submission retry. The site can perform its own
-normal callbacks; the client does not retry the booking. An explicit Ctrl+C or
-process/machine failure can interrupt the 90-second wait; the persistent latch
-still prevents another attempt.
+The full result window begins after the Submit command returns or raises, so its
+pre-click delay cannot shorten observation. After dispatch may have begun, there
+is no automatic verification, refresh, reauthentication or resubmission. Interruptions
+can cut observation short, but the persistent latch still prevents another attempt.
 
-## Logs, persistence, and email recovery
+Chrome uses Beijing time and must remain visible for GUI verification. If manual
+verification is requested, complete only the challenge in that browser; do not
+select dates or click Submit yourself. Expected next-page detection resumes the
+flow. A hung/lost worker stops the run instead. Owned worker/Chrome processes are
+isolated; unrelated browser windows are not targeted.
 
-All paths are relative to the project root, not your shell's current directory:
+## Logs, notifications and recovery
 
-- `logs\EventLog_YYYY_MM_DD.jsonl`: operations, outcomes, errors, retries.
-- `logs\AvailabilityLog_YYYY_MM_DD.jsonl`: every successful full response snapshot,
-  including unpreferred dates and explicit preferred/range-rank fields.
-- `logs\BookingLog_YYYY_MM_DD.jsonl`: attempted Beijing date/time and result.
-- `.state\state.json`: stop/cooldown/retry counters, last snapshot, daily scheduling,
-  and durable email outbox. Does not store visa credentials or security answers.
-- `.state\submission.json`: exclusively created, fsynced, permanent submission latch.
+Paths are relative to the project root:
 
-Every log record has PST (fixed UTC-08:00), UTC, and Beijing timestamps. Files
-rotate on the Beijing date boundary, including during waits. A same-day restart
-creates new files with unique suffixes; nothing is truncated. Rotation runs on the
-event-loop heartbeat, not a hard real-time midnight guarantee.
+| Path | Contents |
+|---|---|
+| `logs\EventLog_YYYY_MM_DD.jsonl` | Actions, errors, retries, `POLL_WAIT` and `CLICK_WAIT`. |
+| `logs\AvailabilityLog_YYYY_MM_DD.jsonl` | All returned dates, preference flags and priority ranks. |
+| `logs\BookingLog_YYYY_MM_DD.jsonl` | Attempted Beijing date/time and outcome. |
+| `.state\state.json` | Stop/retry/check counts, cooldown, cached dates and email outbox. |
+| `.state\submission.json` | Permanent, exclusively created submission guard. |
 
-Preferred-availability email is sent on **each successful observation containing
-preferred dates**, even when unchanged. Daily emails use the latest cached snapshot
-and identify its age/state, not a new forced check. If multiple daily slots were
-missed before startup, only the most recent missed slot is sent; already-recorded
-slots are not duplicated on restart. Daily emails stop with the task.
+Logs include fixed PST (UTC-08:00), UTC and Beijing timestamps. Files rotate on the
+Beijing date boundary via heartbeat; same-day restarts use new suffixes without
+truncation. Protect logs, state and browser profiles as personal information.
 
-Mail has three bounded delivery attempts and a persistent unsent record. To retry
-only unsent notices, without opening a browser or touching the appointment:
+Notifications cover preferred availability, booking outcomes, manual verification,
+restrictions, errors and three daily Beijing-time summaries. Preferred-availability
+emails can repeat on each matching observation. Daily summaries use cached results
+and their age, not a forced query. Notifications stop with the task.
+
+Email delivery has bounded attempts and a persistent outbox. For mail-only recovery,
+load settings with `-ConfigureOnly`, then run:
 
 ```powershell
 .\.venv\Scripts\python.exe main.py --send-pending
 ```
 
-This command explicitly resets only unsent email attempt counts. Email may be
-duplicated after a crash between SMTP acceptance and local acknowledgement.
-Email failure never clears the booking latch or restarts booking.
+This resets only unsent mail attempts; it does not open a browser or clear the booking
+guard. A crash between SMTP acceptance and local acknowledgement can duplicate email.
 
-**Do not delete `.state` to bypass a stopped task.** After a submission, manually
-reconcile the account's actual appointment and remaining allowance first. Starting
-a genuinely new task requires a deliberate offline archive/reset of its state
-after reconciliation and updated configuration; there is no automatic reset
-command. Stop all instances before managing these files. Keep only one project
-copy per account: the local lock cannot coordinate separate machines/copies.
+**Do not delete `.state` just to restart a stopped task.** Reconcile the actual
+appointment and remaining allowance before deliberately archiving/resetting a task.
+There is no automatic reset. The local lock cannot coordinate separate project
+copies or machines; use one active copy per account.
 
-Protect local state/logs and browser profiles as personal information. `.gitignore`
-excludes state, logs, the virtualenv, and SeleniumBase test artifacts. Do not upload
-authenticated page dumps or secret-bearing screenshots.
+## Manual commands and troubleshooting
 
-Exit codes: `0` completed normally/stopped at the check budget; `1` error,
-failed/unknown booking, or unsent notifications; `2` configuration/startup/refused
-restart. A zero exit code alone is not booking confirmation.
+To load configuration without installation or a menu, use the same PowerShell
+process as the subsequent Python command:
 
-## Verification and limitations
+```powershell
+. .\personal\Set-VisaEnvironment.local.ps1 -ConfigureOnly
+.\.venv\Scripts\python.exe main.py --check-config
+```
+
+For manual installation, the equivalent commands are:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip check
+```
+
+| Problem | Action |
+|---|---|
+| Project-root warning/error | Change to the directory containing `main.py`, `requirements.txt` and `visa_tool`, not the private script's directory. |
+| Python or `.venv` error | Check the Python installation and environment. The launcher will not delete/replace a damaged environment. |
+| Package install or `pip check` failure | Resolve the reported dependency/network problem before starting monitoring. |
+| Missing SMTP variables | Use the launcher, or dot-source with `-ConfigureOnly` before manual Python. A separate setup-only child cannot change its parent's environment. |
+| Menu missing | Upgrade an older private setup copy to the current launcher while preserving customization. |
+| Verification timeout or page mismatch | Inspect the stopped run; unknown layouts fail closed rather than inventing availability or success. |
+| UNKNOWN booking result / restart refused | Check the official account manually; do not bypass the submission guard. |
+
+Application exit codes: `0` normal completion/budget stop; `1` operational error,
+failed/unknown booking or unsent notifications; `2` configuration/startup/refused
+restart. Launcher setup errors return `1`. A zero code is not booking confirmation.
+
+## Development and validation
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-# Optional real Chrome tests, using synthetic loopback pages only:
+# Optional Chrome fixtures, using synthetic loopback pages:
 $env:VISA_LOCAL_BROWSER_TESTS = '1'
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 Remove-Item Env:\VISA_LOCAL_BROWSER_TESTS
 ```
 
-The opt-in suite blocks visa/auth/Cloudflare domains in its fixture browser. A
-separate UC smoke test opens only the default blank page and verifies owned-worker
-teardown. Tests cover range gaps/priority, all question pairs, nonpreferred no-click,
-empty results, all returned months, actual slot times, stale contexts, at-most-once
-dispatch/restart, 90-second outcomes, retry caps, mail failure, and date rotation.
-Configuration tests also cover all 25 environment overrides and missing-value
-fallbacks, strict booleans/JSON, secret-safe errors, and a disposable PowerShell
-child with mocked secret prompts that checks Process-only scope and Python inheritance.
-Polling tests cover inclusive bounds, fresh sampling between checks, equal-bound
-fixed waits, invalid bounds, logged delays, and no extra/randomized terminal or safety waits.
-Budget/pacing tests cover disabled and exhausted verification, invocation caps across
-episodes, every post-login action, no authentication delay, real home-page waiting,
-fresh validation after delays, worker progress/watchdog handling, and a full
-90-second result window after delayed successful or ambiguous dispatch.
+Launcher tests use temporary projects and recording `pip`/application fixtures,
+not real package downloads, email or visa actions. They cover both available
+PowerShell hosts, environment inheritance, first-run setup, menu routing and failure
+handling. Other tests cover preference selection, no-click mode, authentication
+mapping, pacing, durable submission limits, outcomes, recovery, logs and email.
+Optional browser tests use local pages; a worker smoke test opens only a blank page.
 
-Live account login, actual Cloudflare acceptance, quota consumption, and a real
-rescheduling transaction have **not** been validated. Site markup/response changes
-fail closed rather than inventing availability or success. General new bookings,
-other consulates, OFC/biometrics scheduling, cancellation, and application replacement
-are not supported.
+| Component | Responsibility |
+|---|---|
+| `Set-VisaEnvironment.template.ps1` | Bootstrap, private configuration template and launch menu. |
+| `main.py`, `visa_tool\settings.py` | Environment/fallback configuration and strict conversion. |
+| `visa_tool\app.py` | Scheduler state machine and CLI modes. |
+| `visa_tool\browser.py` | Guarded UI adapter and isolated browser worker. |
+| `visa_tool\core.py` | Validation, persistence, locking, logs, mail and clocks. |
+| `tests` | Unit and opt-in browser/PowerShell integration coverage. |
 
-The source/resource analysis and detailed requirement assessment are in
-`C:\src\USVisa\CopilotOutput\VisaTool_analysis_astra.md`.
+Live CAPTCHA acceptance, site quotas and server-side booking semantics are not
+established by these tests. Changes to live markup may require adapter updates.
 
-Original project acknowledgement: `SYuan03/VisaAppointmentWatcher` and the
-`CChen19/us-visa-scheduler` draft.
+Original project acknowledgement: `SYuan03/VisaAppointmentWatcher` and
+`CChen19/us-visa-scheduler`.

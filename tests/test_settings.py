@@ -17,6 +17,7 @@ from visa_tool.core import SafetyError
 from visa_tool.settings import answer_setting, boolean_setting, integer_setting, range_setting, time_setting
 
 ROOT = Path(__file__).resolve().parents[1]
+POWERSHELLS = tuple(path for path in (shutil.which("pwsh"), shutil.which("powershell.exe")) if path)
 ENVIRONMENT = {
     "VISA_USERNAME": "synthetic-username",
     "VISA_PASSWORD": "synthetic-visa-password",
@@ -158,6 +159,20 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaises(SafetyError):
             load_main({**ENVIRONMENT, "VISA_AUTO_BOOKING": ""})["build_config"]()
 
+    def test_smtp_diagnostic_names_fields_without_echoing_values(self):
+        config = load_main({
+            **ENVIRONMENT, "VISA_EMAIL_SENDER": "",
+            "VISA_EMAIL_TO": "   ", "VISA_SMTP_PASSWORD": "NEVER_PRINT_THIS\n",
+        })["build_config"]()
+        with self.assertRaises(SafetyError) as caught:
+            config.validate(browser=False)
+        message = str(caught.exception)
+        for name in ("VISA_EMAIL_SENDER", "VISA_EMAIL_TO", "VISA_SMTP_PASSWORD"):
+            self.assertIn(name, message)
+        self.assertIn("SAME PowerShell process", message)
+        self.assertNotIn("NEVER_PRINT_THIS", message)
+        self.assertNotIn("smtp.example.invalid", message)
+
     def test_invalid_poll_environment_stops_cli_before_side_effects(self):
         cases = [
             {"VISA_POLL_SECONDS_MIN": ""},
@@ -249,10 +264,15 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(answer_setting("ANSWERS", {"Question": "Answer"}), {"Question": "Answer"})
 
 
-@unittest.skipUnless(os.name == "nt" and shutil.which("powershell.exe"), "Windows PowerShell integration")
+@unittest.skipUnless(os.name == "nt" and POWERSHELLS, "PowerShell integration on Windows")
 class PowerShellTemplateTests(unittest.TestCase):
     def test_process_only_template_round_trips_into_child_python(self):
-        # Everything runs in a disposable child shell with mocked secret prompts.
+        for shell in POWERSHELLS:
+            with self.subTest(shell=shell):
+                self._assert_template_roundtrip(shell)
+
+    def _assert_template_roundtrip(self, shell):
+        # Everything runs in a disposable child shell with synthetic template values.
         # Existing User/Machine values are compared internally, never returned.
         code = (
             "import json, main; c=main.build_config(); "
@@ -274,9 +294,7 @@ class PowerShellTemplateTests(unittest.TestCase):
         script = f"""
 $ErrorActionPreference = 'Stop'
 function Read-Host {{
-    param([string]$Prompt, [switch]$AsSecureString)
-    if (-not $AsSecureString) {{ throw 'Secret prompt must be masked.' }}
-    ConvertTo-SecureString 'synthetic-only-secret' -AsPlainText -Force
+    throw 'The setup template must never prompt.'
 }}
 $names = @({names})
 $before = @{{}}
@@ -285,7 +303,7 @@ foreach ($name in $names) {{
         $before["$scope/$name"] = [Environment]::GetEnvironmentVariable($name, $scope)
     }}
 }}
-. '{script_path}' 6>$null
+. '{script_path}' -ConfigureOnly 6>$null
 foreach ($name in $names) {{
     foreach ($scope in @('User', 'Machine')) {{
         if ($before["$scope/$name"] -cne [Environment]::GetEnvironmentVariable($name, $scope)) {{
@@ -303,16 +321,16 @@ exit $LASTEXITCODE
             if not key.upper().startswith("VISA_") and key.upper() != "PSMODULEPATH"
         }
         completed = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-EncodedCommand", base64.b64encode(script.encode("utf-16-le")).decode()],
             cwd=ROOT, env=environment, capture_output=True, text=True, timeout=30,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         result = json.loads(completed.stdout.strip())
         self.assertEqual(result["username"], "your-visa-username")
-        self.assertEqual(result["password"], "synthetic-only-secret")
+        self.assertEqual(result["password"], "your-visa-password")
         self.assertEqual(len(result["security_answers"]), 3)
-        self.assertEqual(set(result["security_answers"].values()), {"synthetic-only-secret"})
+        self.assertEqual(set(result["security_answers"].values()), {"answer1", "answer2", "answer3"})
         self.assertEqual(result["applicants"], ["Exact displayed applicant name"])
         self.assertEqual(result["visa_class"], "B1/B2")
         self.assertEqual(result["existing_appointment"], "2030-01-15T10:00:00")
@@ -333,8 +351,39 @@ exit $LASTEXITCODE
         self.assertEqual(result["smtp_host"], "smtp.gmail.com")
         self.assertEqual(result["smtp_port"], 465)
         self.assertEqual(result["smtp_username"], "your.name@gmail.com")
-        self.assertEqual(result["smtp_password"], "synthetic-only-secret")
+        self.assertEqual(result["smtp_password"], "abcdefghijklmnop")
         self.assertEqual(result["email_to"], "notifications@example.com")
+
+    def test_child_setup_does_not_configure_parent_but_dot_sourcing_does(self):
+        for shell in POWERSHELLS:
+            with self.subTest(shell=shell):
+                script_path = str(ROOT / "Set-VisaEnvironment.template.ps1").replace("'", "''")
+                shell_path = shell.replace("'", "''")
+                python_path = sys.executable.replace("'", "''")
+                script = f"""
+$ErrorActionPreference = 'Stop'
+& '{shell_path}' -NoProfile -NonInteractive -ExecutionPolicy Bypass -File '{script_path}' -ConfigureOnly *> $null
+if ($LASTEXITCODE -ne 0) {{ throw 'Child setup failed.' }}
+$diagnostic = & '{python_path}' main.py --check-config
+if ($LASTEXITCODE -ne 2 -or "$diagnostic" -notlike '*VISA_EMAIL_SENDER*') {{
+    throw 'Child setup unexpectedly configured its parent.'
+}}
+. '{script_path}' -ConfigureOnly 6>$null
+& '{python_path}' -c "import main; main.build_config().validate(browser=False)"
+if ($LASTEXITCODE -ne 0) {{ throw 'Same-process SMTP configuration validation failed.' }}
+Write-Output 'scope-regression-passed'
+"""
+                environment = {
+                    key: value for key, value in os.environ.items()
+                    if not key.upper().startswith("VISA_") and key.upper() != "PSMODULEPATH"
+                }
+                completed = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                     "-EncodedCommand", base64.b64encode(script.encode("utf-16-le")).decode()],
+                    cwd=ROOT, env=environment, capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(completed.stdout.strip(), "scope-regression-passed")
 
 
 if __name__ == "__main__":

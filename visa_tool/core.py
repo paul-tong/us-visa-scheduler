@@ -88,9 +88,20 @@ class Config:
     queue_timeout: int = 1800
 
     def validate(self, browser=True, today=None):
-        for value in (self.smtp_host, self.smtp_username, self.smtp_password, self.email_to):
-            if not value or "\n" in value or "\r" in value:
-                raise SafetyError("Configure SMTP host, username, app password and recipient.")
+        smtp_settings = {
+            "VISA_SMTP_HOST": self.smtp_host, "VISA_EMAIL_SENDER": self.smtp_username,
+            "VISA_SMTP_PASSWORD": self.smtp_password, "VISA_EMAIL_TO": self.email_to,
+        }
+        invalid = [name for name, value in smtp_settings.items()
+                   if not value or not value.strip() or "\n" in value or "\r" in value]
+        if invalid:
+            raise SafetyError(
+                "Missing or invalid SMTP configuration: " + ", ".join(invalid) + ". "
+                "Run the configured PowerShell launcher from the project root. For manual Python commands, "
+                "load settings in the SAME PowerShell process using "
+                ". '<path-to-Set-VisaEnvironment.local.ps1>' -ConfigureOnly (dot and space). "
+                "Alternatively, configure the corresponding main.py fallbacks."
+            )
         if not 1 <= self.smtp_port <= 65535:
             raise SafetyError("Invalid SMTP port.")
         if not browser:
