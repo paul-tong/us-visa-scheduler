@@ -138,6 +138,35 @@ class SchedulerTests(RuntimeTest):
         self.assertGreaterEqual(self.clock.elapsed, 90)
         self.assertEqual(self.store.data["booking_result"]["result"], "unknown")
 
+    def test_submit_pause_does_not_consume_result_observation(self):
+        browser = FakeBrowser()
+        original_call = browser.call
+
+        def delayed(method, *args, **kwargs):
+            if method == "submit":
+                self.clock.sleep(17)
+            return original_call(method, *args, **kwargs)
+
+        browser.call = delayed
+        self.assertEqual(self.scheduler(browser, auto_booking=True).run(), "success")
+        self.assertEqual(self.clock.elapsed, 107)
+        self.assertEqual(sum(method == "submit" for method, _ in browser.calls), 1)
+
+    def test_delayed_ambiguous_submit_gets_full_window_without_retry(self):
+        browser = FakeBrowser()
+        original_call = browser.call
+
+        def delayed(method, *args, **kwargs):
+            if method == "submit":
+                self.clock.sleep(17)
+            return original_call(method, *args, **kwargs)
+
+        browser.call = delayed
+        browser.submission_error = WorkerLost("timeout")
+        self.assertEqual(self.scheduler(browser, auto_booking=True).run(), "unknown")
+        self.assertEqual(self.clock.elapsed, 107)
+        self.assertEqual(sum(method == "submit" for method, _ in browser.calls), 1)
+
     def test_explicit_rejection_still_stops_after_90_seconds(self):
         browser = FakeBrowser()
         browser.result = "failure"
@@ -183,6 +212,38 @@ class SchedulerTests(RuntimeTest):
         scheduler._challenge()
         self.assertEqual(scheduler.auto_verifications, 1)
         self.assertTrue(any("Verification resolved" in subject for subject, _ in self.messages))
+
+    def test_disabled_helper_and_zero_budget_use_notified_manual_fallback(self):
+        for changes in ({"auto_verification": False, "max_auto_verifications": 1},
+                        {"auto_verification": True, "max_auto_verifications": 0}):
+            with self.subTest(changes=changes):
+                browser = FakeBrowser()
+                browser.state = "challenge"
+                scheduler = self.scheduler(browser, **changes)
+                scheduler.browser = browser
+                with self.assertRaises(SafetyError):
+                    scheduler._challenge()
+                self.assertNotIn("gui_verify", [method for method, _ in browser.calls])
+                self.assertTrue(any("Manual verification needed" in subject for subject, _ in self.messages))
+
+    def test_auto_cap_counts_across_episodes_not_retries_in_one_episode(self):
+        browser = FakeBrowser()
+        scheduler = self.scheduler(browser, max_auto_verifications=10)
+        scheduler.browser = browser
+        original_sleep = self.clock.sleep
+
+        def manual_success(seconds):
+            original_sleep(seconds)
+            browser.state = "schedule"
+
+        self.clock.sleep = manual_success
+        for episode in range(11):
+            browser.state = "challenge"
+            scheduler._challenge()
+            self.assertEqual(scheduler.auto_verifications, min(episode + 1, 10))
+            self.assertEqual(sum(method == "gui_verify" for method, _ in browser.calls),
+                             min(episode + 1, 10))
+        self.assertEqual(sum("Manual verification needed" in subject for subject, _ in self.messages), 11)
 
 
 if __name__ == "__main__":

@@ -33,6 +33,15 @@ ENVIRONMENT = {
     "VISA_DAILY_EMAIL_TIMES": '["07:00","13:00","18:00"]',
     "VISA_POLL_SECONDS_MIN": "123",
     "VISA_POLL_SECONDS_MAX": "456",
+    "VISA_CLICK_WAIT_SECONDS": "3",
+    "VISA_BLOCK_COOLDOWN_SECONDS": "7200",
+    "VISA_MAX_RECOVERY_RETRIES": "2",
+    "VISA_MAX_CHECKS_PER_RUN": "150",
+    "VISA_AUTO_VERIFICATION": "false",
+    "VISA_MAX_AUTO_VERIFICATIONS": "10",
+    "VISA_MANUAL_VERIFICATION_TIMEOUT_SECONDS": "901",
+    "VISA_PAGE_TIMEOUT_SECONDS": "46",
+    "VISA_QUEUE_TIMEOUT_SECONDS": "1801",
     "VISA_SMTP_HOST": "smtp.example.invalid",
     "VISA_SMTP_PORT": "2465",
     "VISA_EMAIL_SENDER": "sender@example.invalid",
@@ -61,6 +70,15 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(config.daily_times, ("07:00", "13:00", "18:00"))
         self.assertEqual(config.poll_seconds_min, 123)
         self.assertEqual(config.poll_seconds_max, 456)
+        self.assertEqual(config.click_wait_seconds, 3)
+        self.assertEqual(config.cooldown_seconds, 7200)
+        self.assertEqual(config.max_retries, 2)
+        self.assertEqual(config.max_checks, 150)
+        self.assertIs(config.auto_verification, False)
+        self.assertEqual(config.max_auto_verifications, 10)
+        self.assertEqual(config.manual_timeout, 901)
+        self.assertEqual(config.page_timeout, 46)
+        self.assertEqual(config.queue_timeout, 1801)
         self.assertEqual(config.smtp_host, "smtp.example.invalid")
         self.assertEqual(config.smtp_port, 2465)
         self.assertEqual(config.smtp_username, ENVIRONMENT["VISA_EMAIL_SENDER"])
@@ -80,6 +98,15 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(config.daily_times, ("08:00", "12:00", "17:00"))
         self.assertEqual(config.poll_seconds_min, 1800)
         self.assertEqual(config.poll_seconds_max, 3600)
+        self.assertEqual(config.click_wait_seconds, 5)
+        self.assertEqual(config.cooldown_seconds, 86400)
+        self.assertEqual(config.max_retries, 3)
+        self.assertEqual(config.max_checks, 24)
+        self.assertIs(config.auto_verification, True)
+        self.assertEqual(config.max_auto_verifications, 1)
+        self.assertEqual(config.manual_timeout, 900)
+        self.assertEqual(config.page_timeout, 45)
+        self.assertEqual(config.queue_timeout, 1800)
         self.assertEqual(config.smtp_host, "smtp.gmail.com")
         self.assertEqual(config.smtp_port, 465)
         self.assertEqual((config.smtp_username, config.smtp_password, config.email_to), ("", "", ""))
@@ -171,6 +198,42 @@ class SettingsTests(unittest.TestCase):
         self.assertNotIn("NEVER_PRINT_THIS", output.getvalue())
         self.assertNotIn("Traceback", output.getvalue())
 
+    def test_requested_active_budget_profile_is_accepted(self):
+        environment = {
+            **ENVIRONMENT, "VISA_CLICK_WAIT_SECONDS": "3", "VISA_POLL_SECONDS_MIN": "300",
+            "VISA_POLL_SECONDS_MAX": "600", "VISA_BLOCK_COOLDOWN_SECONDS": "7200",
+            "VISA_MAX_RECOVERY_RETRIES": "3", "VISA_MAX_CHECKS_PER_RUN": "150",
+            "VISA_AUTO_VERIFICATION": "true", "VISA_MAX_AUTO_VERIFICATIONS": "10",
+            "VISA_MANUAL_VERIFICATION_TIMEOUT_SECONDS": "900",
+            "VISA_PAGE_TIMEOUT_SECONDS": "45", "VISA_QUEUE_TIMEOUT_SECONDS": "1800",
+        }
+        config = load_main(environment)["build_config"]()
+        config.validate(today=date(2026, 11, 15))
+        self.assertEqual(config.max_auto_verifications, 10)
+        self.assertIs(config.auto_verification, True)
+        self.assertEqual((config.poll_seconds_min, config.poll_seconds_max), (300, 600))
+
+    def test_bad_operational_environment_fails_before_network(self):
+        overrides = (
+            {"VISA_CLICK_WAIT_SECONDS": "-1"},
+            {"VISA_BLOCK_COOLDOWN_SECONDS": "0"},
+            {"VISA_MAX_RECOVERY_RETRIES": "4"},
+            {"VISA_MAX_CHECKS_PER_RUN": "1.5"},
+            {"VISA_AUTO_VERIFICATION": "maybe"},
+            {"VISA_MAX_AUTO_VERIFICATIONS": "-1"},
+            {"VISA_MANUAL_VERIFICATION_TIMEOUT_SECONDS": ""},
+            {"VISA_PAGE_TIMEOUT_SECONDS": "0"},
+            {"VISA_QUEUE_TIMEOUT_SECONDS": "-1"},
+        )
+        for values in overrides:
+            with self.subTest(values=values):
+                config_factory = load_main({**ENVIRONMENT, **values})["build_config"]
+                with patch.object(sys, "argv", ["main.py", "--check-config"]), contextlib.redirect_stdout(io.StringIO()):
+                    with patch("visa_tool.app.smtp_send") as send, patch("visa_tool.app.Store") as store:
+                        self.assertEqual(cli(config_factory), 2)
+                        send.assert_not_called()
+                        store.assert_not_called()
+
     def test_help_does_not_parse_invalid_environment_values(self):
         config_factory = load_main({"VISA_AUTO_BOOKING": "invalid"})["build_config"]
         with patch.object(sys, "argv", ["main.py", "--help"]), contextlib.redirect_stdout(io.StringIO()):
@@ -198,6 +261,10 @@ class PowerShellTemplateTests(unittest.TestCase):
             "existing_appointment=c.existing_appointment,ranges=c.ranges,auto_booking=c.auto_booking,"
             "daily_times=c.daily_times,smtp_host=c.smtp_host,smtp_port=c.smtp_port,"
             "poll_seconds_min=c.poll_seconds_min,poll_seconds_max=c.poll_seconds_max,"
+            "click_wait_seconds=c.click_wait_seconds,cooldown_seconds=c.cooldown_seconds,"
+            "max_retries=c.max_retries,max_checks=c.max_checks,auto_verification=c.auto_verification,"
+            "max_auto_verifications=c.max_auto_verifications,manual_timeout=c.manual_timeout,"
+            "page_timeout=c.page_timeout,queue_timeout=c.queue_timeout,"
             "smtp_username=c.smtp_username,smtp_password=c.smtp_password,email_to=c.email_to)))"
         )
         encoded_python = base64.b64encode(code.encode()).decode()
@@ -254,6 +321,15 @@ exit $LASTEXITCODE
         self.assertEqual(result["daily_times"], ["08:00", "12:00", "17:00"])
         self.assertEqual(result["poll_seconds_min"], 1800)
         self.assertEqual(result["poll_seconds_max"], 3600)
+        self.assertEqual(result["click_wait_seconds"], 5)
+        self.assertEqual(result["cooldown_seconds"], 86400)
+        self.assertEqual(result["max_retries"], 3)
+        self.assertEqual(result["max_checks"], 24)
+        self.assertIs(result["auto_verification"], True)
+        self.assertEqual(result["max_auto_verifications"], 1)
+        self.assertEqual(result["manual_timeout"], 900)
+        self.assertEqual(result["page_timeout"], 45)
+        self.assertEqual(result["queue_timeout"], 1800)
         self.assertEqual(result["smtp_host"], "smtp.gmail.com")
         self.assertEqual(result["smtp_port"], 465)
         self.assertEqual(result["smtp_username"], "your.name@gmail.com")

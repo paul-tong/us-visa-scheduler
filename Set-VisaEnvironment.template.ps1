@@ -59,13 +59,65 @@ The .local.ps1 copy is ignored by git; do not put real secrets in this template.
         # DAILY_EMAIL_TIMES; JSON array of exactly three distinct Beijing HH:MM times.
         VISA_DAILY_EMAIL_TIMES = '["08:00","12:00","17:00"]'
 
+        # Operational budgets below are conservative local choices, not site allowances.
+        # CLICK_WAIT_SECONDS; nonnegative seconds before EACH post-login UI action.
+        # Armed only after validating the visa home page: Reschedule, dropdowns,
+        # preferred date, time slot and Submit. No delay for login/questions/CAPTCHA.
+        # Example active value: '3'; '0' disables it. Revalidate after the pause.
+        VISA_CLICK_WAIT_SECONDS = '5'
+
         # POLL_SECONDS_MIN; inclusive lower bound in positive integer seconds.
-        # Example: 1800 = 30 minutes. This is NOT a published website-safe limit.
+        # Example: 1800 = 30 minutes; active example '300' = 5 minutes.
+        # This is a pause AFTER cycle work, not the complete observation interval.
         VISA_POLL_SECONDS_MIN = '1800'
 
         # POLL_SECONDS_MAX; inclusive upper bound, at least POLL_SECONDS_MIN.
-        # Example: 3600 = 60 minutes. Equal bounds retain a fixed delay.
+        # Example: 3600 = 60 minutes. Active starting example '540' leaves some room
+        # below 10 minutes for work, but cannot guarantee a sub-10-minute interval.
+        # Equal bounds retain a fixed delay; samples may repeat.
         VISA_POLL_SECONDS_MAX = '3600'
+
+        # BLOCK_COOLDOWN_SECONDS; positive fallback after detected restrictions.
+        # '86400' = 24 hours; a longer observed Retry-After always wins.
+        # '7200' = 2 hours is allowed but NOT a verified account-unblock period.
+        # Cooldown/recovery state persists across restarts.
+        VISA_BLOCK_COOLDOWN_SECONDS = '86400'
+
+        # MAX_RECOVERY_RETRIES; integer 0..3, AFTER the initial restriction.
+        # '0' stops on the first restriction. Counts recovery cycles, not HTTP calls.
+        # Never retries a booking submission. Budget is persisted for the task.
+        VISA_MAX_RECOVERY_RETRIES = '3'
+
+        # MAX_CHECKS_PER_RUN; positive successful-observation budget for this TASK.
+        # Despite the name, restarts do not reset it. One observation can issue
+        # multiple HTTP requests. Start at '24'; '150' increases exposure substantially.
+        VISA_MAX_CHECKS_PER_RUN = '24'
+
+        # AUTO_VERIFICATION; true/false or 1/0, only for the Cloudflare GUI helper.
+        # 'false' -> email/manual handoff if a challenge persists; it does not
+        # disable automated username/password or security-question entry.
+        VISA_AUTO_VERIFICATION = 'true'
+
+        # MAX_AUTO_VERIFICATIONS; nonnegative helper-call cap per process run.
+        # One invocation per challenge episode, then manual fallback if unresolved.
+        # A refused/unsafe invocation still counts. '0' disables automatic attempts.
+        # '10' is accepted across episodes, NOT ten retries on one checkbox.
+        # Conservative starting value remains '1'.
+        VISA_MAX_AUTO_VERIFICATIONS = '1'
+
+        # MANUAL_VERIFICATION_TIMEOUT_SECONDS; positive manual-handoff deadline.
+        # '900' = 15 minutes starting before the notice is sent; then stop.
+        VISA_MANUAL_VERIFICATION_TIMEOUT_SECONDS = '900'
+
+        # PAGE_TIMEOUT_SECONDS; positive page/navigation/response wait.
+        # '45' is not a polling interval. The worker watchdog additionally allows
+        # command overhead and each operation's maximum configured click pauses.
+        # The fixed post-submit 90-second observation is independent.
+        VISA_PAGE_TIMEOUT_SECONDS = '45'
+
+        # QUEUE_TIMEOUT_SECONDS; positive budget per virtual waiting-room episode.
+        # '1800' = 30 minutes; let the site auto-refresh, then stop if still queued.
+        VISA_QUEUE_TIMEOUT_SECONDS = '1800'
 
         # SMTP_HOST; Gmail example: smtp.gmail.com.
         VISA_SMTP_HOST = 'smtp.gmail.com'

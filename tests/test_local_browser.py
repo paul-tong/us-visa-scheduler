@@ -2,11 +2,12 @@
 import json
 import os
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 from urllib.parse import parse_qs, urlparse
 
 from test_core import configuration
@@ -230,6 +231,72 @@ class LocalBrowserTests(unittest.TestCase):
         self.browser._wait(lambda: self.browser.visible("#kbq3ReadOnly"), "Questions did not appear.")
         self.browser.answer_questions()
         self.assertEqual(self.driver.execute_script("return window.answers"), ["one", "three"])
+
+    def test_each_post_login_action_waits_but_authentication_does_not(self):
+        self.config.click_wait_seconds = 3
+        waits = Mock()
+        actions = []
+        self.browser = SiteBrowser(self.driver, self.config, sleep=waits,
+                                   on_click_wait=lambda action, seconds: actions.append(action))
+        self.driver.get(self.base + "/auth")
+        self.browser.login()
+        self.browser.answer_questions()
+        waits.assert_not_called()
+        self.enter()
+        self.browser.load_dates()
+        slot = self.browser.prepare_slot("2026-12-23")
+        self.browser.submit(slot)
+        self.assertEqual(actions, ["RESCHEDULE", "POST_CLEAR", "POST_WUHAN", "CALENDAR_YEAR",
+                                   "CALENDAR_MONTH", "PREFERRED_DATE", "TIME_SLOT", "SUBMIT"])
+        self.assertEqual(waits.call_args_list, [call(3)] * 8)
+
+    def test_real_home_delay_and_no_direct_scheduling_before_home(self):
+        self.driver.get(self.base + "/zh-CN/schedule/?reschedule=true")
+        with self.assertRaises(SafetyError):
+            self.browser.load_dates()
+        self.assertIsNone(self.driver.execute_script("return chosen"))
+        self.config.click_wait_seconds = 1
+        self.driver.get(self.base + "/zh-CN/")
+        start = time.monotonic()
+        self.browser.enter_reschedule()
+        self.assertGreaterEqual(time.monotonic() - start, 1)
+
+    def test_home_link_is_revalidated_after_delay(self):
+        self.config.click_wait_seconds = 3
+        self.browser.sleep = lambda _: self.driver.execute_script(
+            "document.querySelector('#reschedule_appointment').href='/zh-CN/AppointmentManager/';")
+        self.driver.get(self.base + "/zh-CN/")
+        with self.assertRaises(SafetyError):
+            self.browser.enter_reschedule()
+        self.assertEqual(self.driver.current_url, self.base + "/zh-CN/")
+
+    def test_submit_revalidates_selection_after_delay(self):
+        self.enter()
+        self.browser.load_dates()
+        slot = self.browser.prepare_slot("2026-12-23")
+        self.config.click_wait_seconds = 3
+        self.browser.sleep = lambda _: self.driver.execute_script("jsdata.Num='changed';")
+        with self.assertRaises(SafetyError):
+            self.browser.submit(slot)
+        self.assertEqual(FixtureHandler.submits, 0)
+
+    def test_time_slot_revalidates_selected_day_after_delay(self):
+        self.enter()
+        self.browser.load_dates()
+        self.config.click_wait_seconds = 3
+        actions = []
+        self.browser.on_click_wait = lambda action, seconds: actions.append(action)
+
+        def change_selection(_):
+            if actions[-1] == "TIME_SLOT":
+                self.driver.execute_script("jsdata.Date='2026-12-16T00:00:00Z';")
+
+        self.browser.sleep = change_selection
+        with self.assertRaises(SafetyError):
+            self.browser.prepare_slot("2026-12-23")
+        self.assertEqual(self.driver.execute_script(
+            "return document.querySelectorAll('#time_select input:checked').length;"), 0)
+        self.assertEqual(FixtureHandler.submits, 0)
 
     def test_monitor_only_adapter_rejects_date_click(self):
         self.enter()

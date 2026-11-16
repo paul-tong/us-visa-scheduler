@@ -51,21 +51,48 @@ SMTP_PASSWORD = os.environ.get("VISA_SMTP_PASSWORD", "")
 # Example VISA_EMAIL_TO: "notifications@example.com"; may equal the sender.
 EMAIL_TO = os.environ.get("VISA_EMAIL_TO", "")
 
-# Inclusive random delay between completed observations; positive integer seconds.
-# Examples: VISA_POLL_SECONDS_MIN="1800", VISA_POLL_SECONDS_MAX="3600" (30-60 minutes).
-# Equal bounds give a fixed delay. These are local choices, NOT website-safe limits.
+# Operational budgets: local conservative defaults, NOT published website-safe limits.
+# Wait before each tool-driven UI click/selection AFTER validating the visa home page.
+# Includes Reschedule, post/calendar dropdowns, a preferred date, time slot and Submit.
+# Does not delay credentials, security answers, CAPTCHA interaction, or read-only checks.
+# Nonnegative integer seconds; 0 disables pacing. Example active value: "3".
+CLICK_WAIT_SECONDS = os.environ.get("VISA_CLICK_WAIT_SECONDS", 5)
+
+# Inclusive random pause AFTER a completed observation, not a start-to-start period.
+# Work and click waits add to the interval. Positive integers; min <= max.
+# Examples: conservative "1800"/"3600"; active starting example "300"/"540".
+# Equal bounds retain fixed pacing. Randomization does not guarantee no blocking.
 POLL_SECONDS_MIN = os.environ.get("VISA_POLL_SECONDS_MIN", 1800)
 POLL_SECONDS_MAX = os.environ.get("VISA_POLL_SECONDS_MAX", 3600)
 
-# These are conservative local budgets, NOT published website-safe limits.
-BLOCK_COOLDOWN_SECONDS = 86400
-MAX_RECOVERY_RETRIES = 3
-MAX_CHECKS_PER_RUN = 24
-AUTO_VERIFICATION = True
-MAX_AUTO_VERIFICATIONS = 1
-MANUAL_VERIFICATION_TIMEOUT_SECONDS = 900
-PAGE_TIMEOUT_SECONDS = 45
-QUEUE_TIMEOUT_SECONDS = 1800
+# Fallback pause after a detected restriction; a longer Retry-After always wins.
+# Persisted across restarts. "86400" = 24 hours; "7200" = 2 hours is NOT a known reset.
+BLOCK_COOLDOWN_SECONDS = os.environ.get("VISA_BLOCK_COOLDOWN_SECONDS", 86400)
+# Initial failure plus at most this many recovery cycles (0-3), persisted per task.
+# 0 stops at the first restriction. This never authorizes retrying a booking submit.
+MAX_RECOVERY_RETRIES = os.environ.get("VISA_MAX_RECOVERY_RETRIES", 3)
+# Successful observations allowed for this persistent task, despite the old name.
+# Restarts do NOT reset the count. One check may issue multiple HTTP requests.
+# Start with "24"; "150" is a larger exposure budget, not a verified site allowance.
+MAX_CHECKS_PER_RUN = os.environ.get("VISA_MAX_CHECKS_PER_RUN", 24)
+# Enables only the best-effort Cloudflare GUI helper; accepts true/false or 1/0.
+# False -> email/manual fallback if a challenge persists; login/answers stay automatic.
+AUTO_VERIFICATION = os.environ.get("VISA_AUTO_VERIFICATION", True)
+# Maximum helper invocations in this process run, across separate challenge episodes.
+# At most one invocation per episode, then manual fallback if it does not resolve.
+# Calls that cannot safely click still consume budget. 0 disables automatic attempts.
+# Example "10" is accepted but not recommended as a starting budget; default is 1.
+MAX_AUTO_VERIFICATIONS = os.environ.get("VISA_MAX_AUTO_VERIFICATIONS", 1)
+# Positive seconds for the emailed manual handoff before terminal stop.
+# Example "900" = 15 minutes; the helper-result grace period is a separate 60 seconds.
+MANUAL_VERIFICATION_TIMEOUT_SECONDS = os.environ.get("VISA_MANUAL_VERIFICATION_TIMEOUT_SECONDS", 900)
+# Positive seconds for normal page/navigation/response waits, not a polling interval.
+# The worker watchdog adds command overhead and applicable click delays.
+# Example "45"; this does not change the fixed 90-second post-submit observation.
+PAGE_TIMEOUT_SECONDS = os.environ.get("VISA_PAGE_TIMEOUT_SECONDS", 45)
+# Positive seconds per waiting-room episode. Allow the site's automatic refresh;
+# no forced queue refreshes. Example "1800" = 30 minutes, then stop and notify.
+QUEUE_TIMEOUT_SECONDS = os.environ.get("VISA_QUEUE_TIMEOUT_SECONDS", 1800)
 
 
 def build_config():
@@ -90,16 +117,17 @@ def build_config():
         smtp_username=SMTP_USERNAME,
         smtp_password=SMTP_PASSWORD,
         email_to=EMAIL_TO,
+        click_wait_seconds=integer_setting("VISA_CLICK_WAIT_SECONDS", CLICK_WAIT_SECONDS),
         poll_seconds_min=integer_setting("VISA_POLL_SECONDS_MIN", POLL_SECONDS_MIN),
         poll_seconds_max=integer_setting("VISA_POLL_SECONDS_MAX", POLL_SECONDS_MAX),
-        cooldown_seconds=BLOCK_COOLDOWN_SECONDS,
-        max_retries=MAX_RECOVERY_RETRIES,
-        max_checks=MAX_CHECKS_PER_RUN,
-        auto_verification=AUTO_VERIFICATION,
-        max_auto_verifications=MAX_AUTO_VERIFICATIONS,
-        manual_timeout=MANUAL_VERIFICATION_TIMEOUT_SECONDS,
-        page_timeout=PAGE_TIMEOUT_SECONDS,
-        queue_timeout=QUEUE_TIMEOUT_SECONDS,
+        cooldown_seconds=integer_setting("VISA_BLOCK_COOLDOWN_SECONDS", BLOCK_COOLDOWN_SECONDS),
+        max_retries=integer_setting("VISA_MAX_RECOVERY_RETRIES", MAX_RECOVERY_RETRIES),
+        max_checks=integer_setting("VISA_MAX_CHECKS_PER_RUN", MAX_CHECKS_PER_RUN),
+        auto_verification=boolean_setting("VISA_AUTO_VERIFICATION", AUTO_VERIFICATION),
+        max_auto_verifications=integer_setting("VISA_MAX_AUTO_VERIFICATIONS", MAX_AUTO_VERIFICATIONS),
+        manual_timeout=integer_setting("VISA_MANUAL_VERIFICATION_TIMEOUT_SECONDS", MANUAL_VERIFICATION_TIMEOUT_SECONDS),
+        page_timeout=integer_setting("VISA_PAGE_TIMEOUT_SECONDS", PAGE_TIMEOUT_SECONDS),
+        queue_timeout=integer_setting("VISA_QUEUE_TIMEOUT_SECONDS", QUEUE_TIMEOUT_SECONDS),
     )
 
 

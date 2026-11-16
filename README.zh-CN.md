@@ -14,11 +14,14 @@
 
 - 从 `https://www.usvisascheduling.com/zh-CN/SignIn` 进入，仅在预期的认证域名
   填写账号密码；按实际显示的问题文本匹配本地答案，支持 1/3、2/3 等问题组合。
-- 在认证页面尝试一次兼容的 SeleniumBase UC GUI 人机验证操作。不能安全操作
-  或未通过时，立即发邮件，暂停并等待用户在原浏览器中手动验证。
+- 可在认证页面尝试兼容的 SeleniumBase UC GUI 人机验证操作；每次挑战最多调用一次，
+  并受当前进程的可配置总次数限制。关闭、用尽预算、不能安全操作或未通过时，
+  发邮件，暂停并等待用户在原浏览器中手动验证。
   不使用第三方验证码代答服务。
 - 首页仅点击已验证的“重新安排预约”链接；检查签证类别、武汉领馆、申请人组
   以及已有预约的日期时间，不点击取消、关闭申请或创建新申请。
+- 登录后每次界面操作前等待 `CLICK_WAIT_SECONDS` 秒，并在等待后重新校验。
+  登录、密保答案和人机验证操作不受该延迟影响。
 - 被动观察网站正常请求返回的完整可预约日期列表，不仅限于屏幕显示的两个月；
   不重放私有 API，不导出认证 Cookie 来加速查询。
 - 按配置列表的顺序匹配闭区间日期范围；优先级最高且有日期的范围中选择最早日期。
@@ -54,7 +57,7 @@ PyAutoGUI 0.9.54；SeleniumBase 根据 Python 版本选择对应的 Selenium。
 
 ## 配置 `main.py` 开头的设置
 
-以下十六项优先读取环境变量；只有变量不存在时，才使用 `main.py` 对应
+以下配置表及“运行预算”表中的全部 25 项优先读取环境变量；只有变量不存在时，才使用 `main.py` 对应
 `os.environ.get(...)` 第二个参数中的默认值。修改默认值时请保留环境变量读取逻辑。
 已存在的环境变量优先于文件修改。设置在 Python 启动时读取，修改外部终端不能改变已运行的进程。
 
@@ -73,8 +76,6 @@ PyAutoGUI 0.9.54；SeleniumBase 根据 Python 版本选择对应的 Selenium。
 | `PREFERRED_DATE_RANGES` | `VISA_PREFERRED_DATE_RANGES` | JSON `[起始日期,结束日期]` 数组的数组；默认使用文件中的示例区间。 |
 | `AUTO_BOOKING` | `VISA_AUTO_BOOKING` | `true`/`false` 或 `1`/`0`，不区分大小写；默认 `False`。 |
 | `DAILY_EMAIL_TIMES` | `VISA_DAILY_EMAIL_TIMES` | 三个北京时间 HH:MM 的 JSON 数组；默认 `["08:00","12:00","17:00"]`。 |
-| `POLL_SECONDS_MIN` | `VISA_POLL_SECONDS_MIN` | 正整数秒数，包含下限；默认 `1800`。 |
-| `POLL_SECONDS_MAX` | `VISA_POLL_SECONDS_MAX` | 不小于下限的正整数秒数，包含上限；默认 `3600`。 |
 | `SMTP_HOST` | `VISA_SMTP_HOST` | 主机名；默认 `smtp.gmail.com`。 |
 | `SMTP_PORT` | `VISA_SMTP_PORT` | 整数字符串；默认 `465`，隐式 TLS。 |
 | `SMTP_USERNAME` | `VISA_EMAIL_SENDER` | 发件人完整邮箱地址；默认为空。 |
@@ -82,7 +83,7 @@ PyAutoGUI 0.9.54；SeleniumBase 根据 Python 版本选择对应的 Selenium。
 | `EMAIL_TO` | `VISA_EMAIL_TO` | 收件人邮箱地址；默认为空。 |
 
 不要把真实密码和答案写入受版本控制的代码。环境变量**不是加密密码库**，
-请保护电脑、会话和本地文件。其他运行预算仍在文件中配置；轮询上下限现已加入这十六项环境覆盖。
+请保护电脑、会话和本地文件。下方全部 11 项运行预算同样遵循环境变量优先的规则。
 
 ### 当前进程作用域的 PowerShell 模板（推荐）
 
@@ -95,10 +96,12 @@ Copy-Item .\Set-VisaEnvironment.template.ps1 .\Set-VisaEnvironment.local.ps1
 ```
 
 模板为每项提供注释和示例。按本次选择，它仅设置 **Process（当前进程）** 环境，
-不写 User/Machine 注册表，也不需要管理员权限。收集完输入后再设置全部十六项。
+不写 User/Machine 注册表，也不需要管理员权限。收集完输入后再设置全部 25 项。
 必须在同一个 PowerShell 窗口启动 Python；关闭窗口后设置不再保留。
 另开 `powershell.exe` 执行脚本不能修改父终端的环境。
 `.local.ps1` 副本已被 git 忽略；不要把真实凭据提交到模板中。
+已有本地副本请合并模板新增的运行预算条目，不要覆盖已经填写的个人配置。
+现有进程环境变量优先于 `main.py` 中修改的默认值；修改后应重新启动 Python。
 
 ### 登录、申请人和已有预约
 
@@ -168,18 +171,41 @@ Google 官方参考：`https://developers.google.com/workspace/gmail/imap/imap-s
 
 ### 运行预算
 
-| 配置项 | 默认值 | 含义 |
-|---|---:|---|
-| `POLL_SECONDS_MIN` | 1800 | 随机观察间隔的最小秒数，包含下限，可通过环境变量覆盖。 |
-| `POLL_SECONDS_MAX` | 3600 | 随机观察间隔的最大秒数，包含上限，可通过环境变量覆盖。 |
-| `BLOCK_COOLDOWN_SECONDS` | 86400 | 检测到限制后的本地冷却时间；若 `Retry-After` 更长，采用更长时间。并非已验证的解封时长。 |
-| `MAX_RECOVERY_RETRIES` | 3 | 初次失败后最多三轮恢复，重启不会清零。 |
-| `MAX_CHECKS_PER_RUN` | 24 | 当前持久化任务的成功查询上限；虽然名称含 per-run，重启也不会清零。 |
-| `AUTO_VERIFICATION` | `True` | 尽力自动验证，不保证通过。 |
-| `MAX_AUTO_VERIFICATIONS` | 1 | 每次进程运行至多调用一次辅助方法，不等于库内部恰好只有一次点击/请求。 |
-| `MANUAL_VERIFICATION_TIMEOUT_SECONDS` | 900 | 手动验证等待上限；超时通知并停止。 |
-| `PAGE_TIMEOUT_SECONDS` | 45 | 普通页面/响应等待时间。 |
-| `QUEUE_TIMEOUT_SECONDS` | 1800 | 网站自身排队页面的最大等待时间。 |
+这些都是本地限制，不是网站公布的配额，也不保证不会被封锁。
+所有数值预算必须为整数；轮询上下限、冷却、观察次数和超时必须为正数。
+点击延迟和自动验证次数可以为零；恢复重试次数必须为 0–3。
+
+| 配置项 | 环境变量 | 保守默认值 | 含义 |
+|---|---|---:|---|
+| `CLICK_WAIT_SECONDS` | `VISA_CLICK_WAIT_SECONDS` | 5 | 登录后每次界面操作前等待的秒数，不是只在登录成功后等一次。零关闭延迟；详细范围见下文。 |
+| `POLL_SECONDS_MIN` | `VISA_POLL_SECONDS_MIN` | 1800 | 一轮观察完成后的随机暂停下限，包含端点。 |
+| `POLL_SECONDS_MAX` | `VISA_POLL_SECONDS_MAX` | 3600 | 暂停上限，包含端点且不能小于下限；实际观察间隔还包含处理时间。 |
+| `BLOCK_COOLDOWN_SECONDS` | `VISA_BLOCK_COOLDOWN_SECONDS` | 86400 | 限制后的默认冷却（24 小时）；采用更长的已观察到的 `Retry-After`。跨重启持久化，不是已验证的解封周期。 |
+| `MAX_RECOVERY_RETRIES` | `VISA_MAX_RECOVERY_RETRIES` | 3 | 初次限制后额外恢复次数，按任务持久化。零表示首次限制即停止。绝不重试改期提交。 |
+| `MAX_CHECKS_PER_RUN` | `VISA_MAX_CHECKS_PER_RUN` | 24 | 当前持久化任务的成功观察次数上限；尽管名称含 per-run，重启也不会清零。一次观察可能产生多个 HTTP 请求。 |
+| `AUTO_VERIFICATION` | `VISA_AUTO_VERIFICATION` | `True` | 仅开启尽力而为的 Cloudflare GUI 辅助方法。`false` 或 `0` 关闭它，但不关闭账号密码/密保自动填写；持续挑战转为邮件通知的手动验证。 |
+| `MAX_AUTO_VERIFICATIONS` | `VISA_MAX_AUTO_VERIFICATIONS` | 1 | 当前进程所有挑战中的辅助方法调用总上限。零关闭自动尝试；允许 10。每次挑战最多调用一次，未解决就转手动。 |
+| `MANUAL_VERIFICATION_TIMEOUT_SECONDS` | `VISA_MANUAL_VERIFICATION_TIMEOUT_SECONDS` | 900 | 手动验证期限（15 分钟），在发送通知前开始计时。检测到预期下一页后继续，否则停止。与自动辅助调用后最多 60 秒的观察期独立。 |
+| `PAGE_TIMEOUT_SECONDS` | `VISA_PAGE_TIMEOUT_SECONDS` | 45 | 普通页面/导航/响应等待，不是轮询间隔。浏览器进程看门狗额外预留命令开销和对应点击延迟。不改变提交后的固定 90 秒观察。 |
+| `QUEUE_TIMEOUT_SECONDS` | `VISA_QUEUE_TIMEOUT_SECONDS` | 1800 | 每次虚拟排队的最大秒数（30 分钟）。让网站自行刷新，不强制刷新；超时停止并通知。 |
+
+**自动验证的确切含义：**`AUTO_VERIFICATION=False` 或 `MAX_AUTO_VERIFICATIONS=0`
+表示工具不会执行验证码点击。挑战自行消失时仍可继续，否则邮件提示手动验证。
+开启时，即使辅助调用因窗口不安全等原因拒绝点击，也消耗一次调用预算。
+总次数随新进程启动而重置，不随每次重试或登录重置；它计算的是辅助方法调用，
+不是物理点击次数、库内部重新加载次数或 HTTP 请求数。
+设置 10 **不代表对同一个复选框连续尝试十次**。一次调用后检测是否到达预期下一页；
+未解决则进入有超时限制的手动流程。浏览器工作进程丢失则停止并通知人工处理。
+一旦可能已经提交改期，禁止再调用验证辅助方法。
+
+**点击延迟的范围：**只有验证已登录的签证首页后才启用，包括首页改期链接、
+两次领馆下拉框选择、日历年/月选择、偏好日期、第一个可用时段和 Submit。
+人机验证、账号密码/密保页面、只读检查和结果观察不增加该延迟，也不增加强制刷新。
+每次操作记录 `CLICK_WAIT`，字段为 `target_action`、`delay_seconds`；等待后重新读取
+上下文及控件。日期、申请人、已有预约或提交选择变化时安全停止，不使用旧控件继续提交；
+时段消失时不提交。浏览器等待期间，主进程继续正常心跳工作。
+提交后的 90 秒从 Submit 命令返回或抛出异常后开始，避免点击前等待及命令耗时吃掉观察期；
+模糊结果仍保留永久提交标记，绝不重试。
 
 每轮观察完成后，若允许继续查询，程序从 `[POLL_SECONDS_MIN, POLL_SECONDS_MAX]`
 中重新均匀随机选择一个整数秒数。上下限都可能被选中，连续两次抽样也可能相同。
@@ -200,6 +226,44 @@ $env:VISA_POLL_SECONDS_MAX = '3600'
 `minimum_seconds`、`maximum_seconds`。提交后或达到查询预算时不再抽样等待。
 限制冷却、`Retry-After`、验证超时、提交后的 90 秒观察以及北京时间每日三次邮件
 **不会随机化**。随机等待期间仍执行心跳日志轮转和邮件调度。随机化不保证避免封锁。
+
+#### 较活跃的观察配置
+
+你提出的配置**通过参数校验**，但不是网站已确认的安全频率。
+`300–600` 表示暂停 5–10 分钟，**不保证两次观察间隔小于十分钟**：
+点击延迟、页面请求、认证、排队和邮件处理都会额外耗时。
+
+如果服务方允许主动观察，可先采用下面较克制的起始示例：
+
+```powershell
+$env:VISA_CLICK_WAIT_SECONDS = '3'
+$env:VISA_POLL_SECONDS_MIN = '300'
+$env:VISA_POLL_SECONDS_MAX = '540'
+$env:VISA_BLOCK_COOLDOWN_SECONDS = '86400'
+$env:VISA_MAX_RECOVERY_RETRIES = '3'
+$env:VISA_MAX_CHECKS_PER_RUN = '24'
+$env:VISA_AUTO_VERIFICATION = 'true'
+$env:VISA_MAX_AUTO_VERIFICATIONS = '1'
+$env:VISA_MANUAL_VERIFICATION_TIMEOUT_SECONDS = '900'
+$env:VISA_PAGE_TIMEOUT_SECONDS = '45'
+$env:VISA_QUEUE_TIMEOUT_SECONDS = '1800'
+```
+
+暂停 5–9 分钟为处理时间预留一些余量，仍不能保证实际间隔小于十分钟。
+`main.py` 和模板中的保守默认值保持不变。
+
+| 你提出的值 | 评价 |
+|---|---|
+| 点击延迟 `3` | 支持；每次登录后操作均等待，但不能保证不封锁。 |
+| 轮询 `300–600` | 支持；`300–540` 只是活跃观察的起始示例，不是绕过限制或安全保证。 |
+| 冷却 `7200` | 支持；两小时不是已经验证的解封/重置周期。建议初始保留 `86400`，更长的服务器等待要求优先。 |
+| 观察 `150` 次 | 暴露量明显增大。150 次成功观察包含 149 次暂停，按 300–600 秒计算为 12 小时 25 分钟到 24 小时 50 分钟，另加处理时间；一次观察不等于一个请求，本地登录/恢复上限可能提前停止。 |
+| 自动验证 `True`、上限 `10` | 支持跨多次挑战计数；建议从 `1` 开始，重复挑战不应导致对同一复选框快速重试十次。 |
+| 重试 `3`；手动/页面/排队 `900/45/1800` | 与保守默认值相同；重试针对访问限制，不针对改期提交。 |
+
+不假定任何未公开的网站配额或挑战接受阈值。Cloudflare 官方将生产环境中的自动化
+挑战处理列为不支持的场景：
+`https://developers.cloudflare.com/cloudflare-challenges/reference/supported-browsers/`。
 
 接近页面浏览上限的警告也会被视为限制。冷却期间不发送预约查询，
 但冷却不会清除服务端限制。一次恢复可能包含正常导航和认证请求，
@@ -313,9 +377,11 @@ Remove-Item Env:\VISA_LOCAL_BROWSER_TESTS
 空白页面并验证工作进程清理。测试覆盖日期优先级/间隔、安全问题组合、不点击
 非偏好日期、空结果、跨月份、真实时段列、陈旧状态、一次提交/重启、90 秒结果观察、
 重试上限、邮件失败及午夜日志轮转。
-配置测试还覆盖十六项环境覆盖及缺省值、严格的布尔/JSON 转换、不泄露敏感值的错误，
+配置测试还覆盖全部 25 项环境覆盖及缺省值、严格的布尔/JSON 转换、不泄露敏感值的错误，
 并在一次性 PowerShell 子进程中使用模拟密码输入验证 Process 作用域和 Python 继承。
 轮询测试覆盖包含端点、每次重新抽样、相等上下限、非法范围、日志内容，以及不额外等待或改变安全等待。
+预算/延迟测试覆盖关闭及用尽自动验证、跨挑战计数、所有登录后界面操作、认证不增加等待、
+真实首页延迟、等待后重新校验、工作进程进度和超时处理，以及延迟或模糊提交后完整的 90 秒观察。
 
 **未验证真实账号登录、实际 Cloudflare 接受情况、服务端次数扣减或真实改期交易。**
 网站结构变化会安全失败，而不是伪造可用日期或成功结果。

@@ -32,7 +32,8 @@ class Scheduler:
         if self.config.auto_verification and self.auto_verifications < self.config.max_auto_verifications:
             self.auto_verifications += 1
             runtime.phase = "AUTO_VERIFICATION"
-            runtime.logs.event("AUTO_VERIFICATION")
+            runtime.logs.event("AUTO_VERIFICATION", invocation=self.auto_verifications,
+                               limit=self.config.max_auto_verifications)
             try:
                 attempt = self.browser.call("gui_verify", timeout=30)
             except WorkerLost:
@@ -150,14 +151,16 @@ class Scheduler:
         runtime.phase = "SUBMISSION_OBSERVATION"
         self.logs.write("BookingLog", "SUBMISSION_MAY_HAVE_STARTED", "pending",
                         datetime_beijing=slot.beijing_datetime, slot=slot.__dict__)
-        deadline = runtime.clock.monotonic() + SUBMIT_WAIT_SECONDS
         results = set()
         worker_available = True
         try:
-            self.browser.call("submit", slot, timeout=min(45, SUBMIT_WAIT_SECONDS))
+            self.browser.call("submit", slot)
         except Exception as exc:
             self.logs.event("SUBMIT", "unknown", errorDetails=type(exc).__name__)
             worker_available = not isinstance(exc, WorkerLost)
+        # A pre-click pause or a slow/ambiguous dispatch must not consume the
+        # promised post-submit observation window.
+        deadline = runtime.clock.monotonic() + SUBMIT_WAIT_SECONDS
         while runtime.clock.monotonic() < deadline:
             if worker_available:
                 try:

@@ -35,7 +35,7 @@ def configuration(root, **changes):
         ranges=(("2026-12-22", "2026-12-25"), ("2026-12-01", "2026-12-15")),
         smtp_host="smtp.invalid", smtp_username="sender@example.invalid",
         smtp_password="not-a-secret", email_to="recipient@example.invalid",
-        poll_seconds_min=1, poll_seconds_max=1, cooldown_seconds=2,
+        click_wait_seconds=0, poll_seconds_min=1, poll_seconds_max=1, cooldown_seconds=2,
         max_checks=2, manual_timeout=2, page_timeout=2,
     )
     return replace(base, **changes)
@@ -83,6 +83,23 @@ class CoreTests(RuntimeTest):
         for value in ("not a date", "2026-02-30", "2026-12-01junk"):
             with self.assertRaises(SafetyError):
                 parse_day(value)
+
+    def test_operational_budget_types_and_limits(self):
+        invalid = (
+            {"click_wait_seconds": -1}, {"click_wait_seconds": True},
+            {"max_auto_verifications": -1}, {"max_auto_verifications": True},
+            {"auto_verification": "false"}, {"max_retries": True},
+        )
+        for changes in invalid:
+            with self.subTest(changes=changes), self.assertRaises(SafetyError):
+                replace(self.config, **changes).validate(today=date(2026, 11, 15))
+        for field in ("cooldown_seconds", "max_checks", "manual_timeout", "page_timeout", "queue_timeout"):
+            for value in (0, -1, True, 1.5):
+                with self.subTest(field=field, value=value), self.assertRaises(SafetyError):
+                    replace(self.config, **{field: value}).validate(today=date(2026, 11, 15))
+        for value in (0, 1, 10):
+            replace(self.config, click_wait_seconds=0, max_auto_verifications=value).validate(
+                today=date(2026, 11, 15))
 
     def test_poll_bounds_require_positive_ordered_integers(self):
         for minimum, maximum in ((0, 5), (-1, 5), (5, 0), (5, 4), (True, 5), (1, False), (1.5, 5), (1, 5.5)):

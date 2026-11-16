@@ -75,6 +75,7 @@ class Config:
     smtp_username: str = field(default="", repr=False)
     smtp_password: str = field(default="", repr=False)
     email_to: str = field(default="", repr=False)
+    click_wait_seconds: int = 5
     poll_seconds_min: int = 1800
     poll_seconds_max: int = 3600
     cooldown_seconds: int = 86400
@@ -119,16 +120,25 @@ class Config:
         for value in self.daily_times:
             if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
                 raise SafetyError("Daily times must be HH:MM in Beijing time.")
-        if not 0 <= self.max_retries <= 3:
+        if type(self.max_retries) is not int or not 0 <= self.max_retries <= 3:
             raise SafetyError("Recovery retries must be between zero and three.")
         if (type(self.poll_seconds_min) is not int or type(self.poll_seconds_max) is not int
                 or not 0 < self.poll_seconds_min <= self.poll_seconds_max):
             raise SafetyError("Polling bounds must be positive integers with POLL_SECONDS_MIN <= POLL_SECONDS_MAX.")
-        if min(self.cooldown_seconds, self.max_checks,
-               self.manual_timeout, self.page_timeout, self.queue_timeout) <= 0:
-            raise SafetyError("Timeouts and operational budgets must be positive.")
-        if not 0 <= self.max_auto_verifications <= 1:
-            raise SafetyError("At most one automatic verification invocation is allowed.")
+        if type(self.click_wait_seconds) is not int or self.click_wait_seconds < 0:
+            raise SafetyError("CLICK_WAIT_SECONDS must be a nonnegative integer.")
+        positive_budgets = {
+            "BLOCK_COOLDOWN_SECONDS": self.cooldown_seconds, "MAX_CHECKS_PER_RUN": self.max_checks,
+            "MANUAL_VERIFICATION_TIMEOUT_SECONDS": self.manual_timeout,
+            "PAGE_TIMEOUT_SECONDS": self.page_timeout, "QUEUE_TIMEOUT_SECONDS": self.queue_timeout,
+        }
+        for name, value in positive_budgets.items():
+            if type(value) is not int or value <= 0:
+                raise SafetyError(f"{name} must be a positive integer.")
+        if type(self.auto_verification) is not bool:
+            raise SafetyError("AUTO_VERIFICATION must be a boolean.")
+        if type(self.max_auto_verifications) is not int or self.max_auto_verifications < 0:
+            raise SafetyError("MAX_AUTO_VERIFICATIONS must be a nonnegative integer.")
         keys = [normalized(key) for key in self.security_answers]
         if len(keys) < 3 or len(keys) != len(set(keys)) or any(not key for key in keys):
             raise SafetyError("Security questions must have distinct, nonempty normalized text.")

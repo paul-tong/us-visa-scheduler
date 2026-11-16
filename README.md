@@ -15,11 +15,14 @@ or CAPTCHA helper guarantees access or prevents account restrictions.
 - Enters through `https://www.usvisascheduling.com/zh-CN/SignIn`, fills credentials
   only on the expected authentication host, and matches the displayed security
   questions to locally configured answers (including question pairs 1/3 and 2/3).
-- Attempts one compatible SeleniumBase UC GUI verification interaction on an
-  authentication page. If unsuccessful or unsafe, emails you and pauses for
+- Optionally attempts a compatible SeleniumBase UC GUI verification interaction on an
+  authentication page, once per challenge episode within a configurable per-run cap.
+  If unsuccessful, disabled, exhausted or unsafe, emails you and pauses for
   manual verification in the same browser. It never uses an external CAPTCHA solver.
 - On the home page, clicks **only** the validated reschedule link. Checks the
   displayed visa class/post, exact applicant group, and existing appointment.
+- Waits `CLICK_WAIT_SECONDS` before each post-login UI action and revalidates the
+  context/target afterward. Login, security answers and verification are not delayed.
 - Observes all dates returned by the site's normal schedule-day request, not just
   the two visible calendar months. No direct/private API replay is used.
 - Applies inclusive date ranges in your priority order; within the first matching
@@ -60,7 +63,8 @@ Installation and driver provisioning require network access.
 
 ## Configure the beginning of `main.py`
 
-The sixteen settings below read environment variables first. If a variable is
+All 25 settings in the configuration and operational-budget tables below read
+environment variables first. If a variable is
 absent, the second argument of its `os.environ.get(...)` expression in `main.py`
 is the fallback. Edit that fallback if needed without removing the environment
 lookup. Existing environment values win over file edits. Settings are loaded when
@@ -82,8 +86,6 @@ In particular, `"false"` does **not** enable booking.
 | `PREFERRED_DATE_RANGES` | `VISA_PREFERRED_DATE_RANGES` | JSON array of `[start, end]` pairs; example ranges in `main.py` are the fallback. |
 | `AUTO_BOOKING` | `VISA_AUTO_BOOKING` | `true`/`false` or `1`/`0`, case-insensitive; fallback `False`. |
 | `DAILY_EMAIL_TIMES` | `VISA_DAILY_EMAIL_TIMES` | JSON array of three Beijing HH:MM strings; fallback `["08:00","12:00","17:00"]`. |
-| `POLL_SECONDS_MIN` | `VISA_POLL_SECONDS_MIN` | Positive integer seconds; inclusive lower bound, fallback `1800`. |
-| `POLL_SECONDS_MAX` | `VISA_POLL_SECONDS_MAX` | Positive integer seconds, at least the minimum; inclusive upper bound, fallback `3600`. |
 | `SMTP_HOST` | `VISA_SMTP_HOST` | Hostname; fallback `smtp.gmail.com`. |
 | `SMTP_PORT` | `VISA_SMTP_PORT` | Integer string; fallback `465` (implicit TLS). |
 | `SMTP_USERNAME` | `VISA_EMAIL_SENDER` | Full sending email address; empty fallback. |
@@ -92,8 +94,7 @@ In particular, `"false"` does **not** enable booking.
 
 Do not put real secrets in tracked source files. Environment variables are local
 process inputs, **not an encrypted secret vault**; protect the machine/session.
-The other operational budgets below remain file-configured; only the polling
-bounds join these sixteen environment overrides.
+All eleven operational budgets below follow the same environment-first rule.
 
 ### Process-scoped PowerShell template (recommended)
 
@@ -107,10 +108,13 @@ Copy-Item .\Set-VisaEnvironment.template.ps1 .\Set-VisaEnvironment.local.ps1
 
 The template has a comment/example for every property. It writes **Process only**,
 as requested: no User/Machine environment registry updates and no administrator
-access. It sets all sixteen values after collecting the inputs. Launch Python
+access. It sets all 25 values after collecting the inputs. Launch Python
 from this same PowerShell window; closing it discards these settings. Running the
 script in a separate `powershell.exe` process cannot update the parent shell.
 The `.local.ps1` copy is ignored by git. Do not commit credentials in the template.
+For an existing local copy, merge the new budget entries from the template rather
+than overwriting your customized file. Existing process environment values take
+precedence over changed `main.py` fallbacks; restart Python after changing them.
 
 ### Authentication, identity, and existing appointment
 
@@ -188,18 +192,46 @@ and `https://support.google.com/accounts/answer/185833`.
 
 ### Operational budgets
 
-| Setting | Default | Meaning |
-|---|---:|---|
-| `POLL_SECONDS_MIN` | 1800 | Inclusive minimum random delay between observations, in seconds; environment-overridable. |
-| `POLL_SECONDS_MAX` | 3600 | Inclusive maximum random delay, in seconds; environment-overridable. |
-| `BLOCK_COOLDOWN_SECONDS` | 86400 | Local fallback wait after a detected restriction. Longer `Retry-After` values prevail. Not a verified unblock period. |
-| `MAX_RECOVERY_RETRIES` | 3 | Initial failure plus at most three recovery cycles, persisted across restarts. |
-| `MAX_CHECKS_PER_RUN` | 24 | Maximum successful checks for this persistent task. Despite the historical name, restarts do not reset its count. |
-| `AUTO_VERIFICATION` | `True` | Best-effort GUI helper; no automatic challenge guarantee. |
-| `MAX_AUTO_VERIFICATIONS` | 1 | At most one helper invocation per process run, not necessarily one library-internal click/request. |
-| `MANUAL_VERIFICATION_TIMEOUT_SECONDS` | 900 | Bounded manual handoff; automatic notification, pause, then resume or stop. |
-| `PAGE_TIMEOUT_SECONDS` | 45 | Normal page/request wait. |
-| `QUEUE_TIMEOUT_SECONDS` | 1800 | Maximum wait for the site's own virtual queue. |
+These are local limits, not published website quotas or guaranteed safe settings.
+Every numeric budget is an integer; polling bounds, cooldown, check budget and
+timeouts must be positive. Click delay and helper cap may be zero; retries are 0-3.
+
+| Setting | Environment variable | Conservative fallback | Meaning |
+|---|---|---:|---|
+| `CLICK_WAIT_SECONDS` | `VISA_CLICK_WAIT_SECONDS` | 5 | Seconds before each post-login UI action, not just once after login. Zero disables pacing. See scope below. |
+| `POLL_SECONDS_MIN` | `VISA_POLL_SECONDS_MIN` | 1800 | Inclusive minimum random pause after a completed observation. |
+| `POLL_SECONDS_MAX` | `VISA_POLL_SECONDS_MAX` | 3600 | Inclusive maximum pause; must be at least the minimum. Work adds to the interval. |
+| `BLOCK_COOLDOWN_SECONDS` | `VISA_BLOCK_COOLDOWN_SECONDS` | 86400 | Restriction fallback wait (24 hours); a longer observed `Retry-After` wins. Persisted across restarts; not a verified reset period. |
+| `MAX_RECOVERY_RETRIES` | `VISA_MAX_RECOVERY_RETRIES` | 3 | Additional recovery cycles after the initial restriction, persisted for the task. Zero stops on the first restriction. Never retries a booking submission. |
+| `MAX_CHECKS_PER_RUN` | `VISA_MAX_CHECKS_PER_RUN` | 24 | Successful observations for the persistent task. Despite the historical name, restarts do not reset it. One observation can cause multiple HTTP requests. |
+| `AUTO_VERIFICATION` | `VISA_AUTO_VERIFICATION` | `True` | Enables only the best-effort Cloudflare GUI helper. `false` or `0` disables it, not automatic credentials/security answers. A persistent challenge then triggers emailed manual handoff. |
+| `MAX_AUTO_VERIFICATIONS` | `VISA_MAX_AUTO_VERIFICATIONS` | 1 | Helper-invocation cap across challenge episodes in this process run. Zero disables automatic attempts; 10 is accepted. At most one invocation per episode, then manual fallback if unresolved. |
+| `MANUAL_VERIFICATION_TIMEOUT_SECONDS` | `VISA_MANUAL_VERIFICATION_TIMEOUT_SECONDS` | 900 | Manual-handoff deadline (15 minutes), beginning before the notification is sent. Resume on a recognized next page; otherwise stop. Separate from the helper's up-to-60-second result grace period. |
+| `PAGE_TIMEOUT_SECONDS` | `VISA_PAGE_TIMEOUT_SECONDS` | 45 | Normal page/navigation/response wait, not a polling interval. The worker watchdog adds command overhead and applicable click delays. Does not change the fixed post-submit 90-second observation. |
+| `QUEUE_TIMEOUT_SECONDS` | `VISA_QUEUE_TIMEOUT_SECONDS` | 1800 | Maximum seconds per waiting-room episode (30 minutes). Let the website refresh itself; do not force refreshes. Timeout stops/notifies. |
+
+**Verification semantics.** `AUTO_VERIFICATION=False` or `MAX_AUTO_VERIFICATIONS=0`
+means no tool-driven CAPTCHA interaction. A challenge that clears itself can still
+proceed; otherwise you receive a manual-verification email. If enabled, a refused
+or unsafe helper invocation still consumes one count. The cap resets when a new
+process starts, not on each retry or login. It limits helper calls, not physical
+clicks, internal reloads or HTTP requests. A cap of 10 does **not** retry one checkbox
+ten times. After one invocation, the tool checks for a recognized next page; an
+unresolved challenge uses the bounded manual fallback. Worker loss instead stops
+and sends an action-required notice. No helper is invoked after a possible submission.
+
+**Click-delay scope.** Pacing is armed only after validating the authenticated visa
+home page. It applies before the home Reschedule link, both post-dropdown selections,
+calendar year/month selections, the preferred date, the first usable time slot, and
+Submit. It does not delay human verification, credential/security-question controls,
+read-only checks or result polling, and does not add forced page refreshes.
+Each action records `CLICK_WAIT` with `target_action` and `delay_seconds`; context
+and targets are re-read after the pause. A changed date, applicant, existing booking
+or Submit selection fails closed rather than using a stale target. Missing slots
+are not submitted. During worker waits, the parent continues normal heartbeats.
+The 90-second result window begins after the Submit command returns or raises, so
+the pre-click pause and command latency cannot consume that window. Ambiguous
+dispatch still leaves the permanent latch and never retries.
 
 After each completed observation, if another check is permitted, the scheduler
 samples a fresh integer uniformly from `[POLL_SECONDS_MIN, POLL_SECONDS_MAX]`.
@@ -225,6 +257,45 @@ submission or once the check budget is exhausted. Restriction cooldowns,
 `Retry-After`, verification deadlines, the 90-second result window, and the three
 Beijing daily email times are **not randomized**. Heartbeat logging/email work
 continues during polling waits. Randomization is not a guarantee against blocking.
+
+#### Active observation profile
+
+Your proposed values are **valid configuration**, but are not an established safe
+website rate. `300-600` means 5-10 minutes of sleep, **not** strictly less than ten
+minutes between observations. Click waits, network work, authentication, queueing
+and email work add time.
+
+If active observation is permitted, a more restrained starting example is:
+
+```powershell
+$env:VISA_CLICK_WAIT_SECONDS = '3'
+$env:VISA_POLL_SECONDS_MIN = '300'
+$env:VISA_POLL_SECONDS_MAX = '540'
+$env:VISA_BLOCK_COOLDOWN_SECONDS = '86400'
+$env:VISA_MAX_RECOVERY_RETRIES = '3'
+$env:VISA_MAX_CHECKS_PER_RUN = '24'
+$env:VISA_AUTO_VERIFICATION = 'true'
+$env:VISA_MAX_AUTO_VERIFICATIONS = '1'
+$env:VISA_MANUAL_VERIFICATION_TIMEOUT_SECONDS = '900'
+$env:VISA_PAGE_TIMEOUT_SECONDS = '45'
+$env:VISA_QUEUE_TIMEOUT_SECONDS = '1800'
+```
+
+The 5-9-minute pause leaves some headroom, but still cannot guarantee a sub-10-minute
+interval. Conservative defaults in `main.py` and the template remain unchanged.
+
+| Your proposed value | Assessment |
+|---|---|
+| Click delay `3` | Supported before each post-login action; may reduce action frequency but cannot prevent blocking. |
+| Poll `300-600` | Supported; use `300-540` only as an active starting example, not a rate-limit bypass or guarantee. |
+| Cooldown `7200` | Supported, but two hours is not a verified account-unblock/reset duration. Retain `86400` initially; longer server waits prevail. |
+| Checks `150` | Much larger exposure. 150 successful checks involve 149 pauses: 12 h 25 min-24 h 50 min at 300-600 seconds, plus processing. A check is not one request; local login/recovery limits may stop earlier. |
+| Automatic verification `True`, cap `10` | Supported across separate episodes. Start with cap `1`; repeated challenges are not a reason to run ten rapid helper retries. |
+| Retries `3`; manual/page/queue `900/45/1800` | Match the conservative defaults. Retries concern restrictions, never rescheduling dispatch. |
+
+No undocumented website quota or challenge acceptance threshold is assumed.
+Cloudflare documents automated production challenge solving as unsupported:
+`https://developers.cloudflare.com/cloudflare-challenges/reference/supported-browsers/`.
 
 Detected page-view warnings are treated as restrictions. A cooldown performs no
 scheduling queries; it does not erase server-side account state. A recovery cycle
@@ -354,11 +425,15 @@ separate UC smoke test opens only the default blank page and verifies owned-work
 teardown. Tests cover range gaps/priority, all question pairs, nonpreferred no-click,
 empty results, all returned months, actual slot times, stale contexts, at-most-once
 dispatch/restart, 90-second outcomes, retry caps, mail failure, and date rotation.
-Configuration tests also cover all sixteen environment overrides and missing-value
+Configuration tests also cover all 25 environment overrides and missing-value
 fallbacks, strict booleans/JSON, secret-safe errors, and a disposable PowerShell
 child with mocked secret prompts that checks Process-only scope and Python inheritance.
 Polling tests cover inclusive bounds, fresh sampling between checks, equal-bound
 fixed waits, invalid bounds, logged delays, and no extra/randomized terminal or safety waits.
+Budget/pacing tests cover disabled and exhausted verification, invocation caps across
+episodes, every post-login action, no authentication delay, real home-page waiting,
+fresh validation after delays, worker progress/watchdog handling, and a full
+90-second result window after delayed successful or ambiguous dispatch.
 
 Live account login, actual Cloudflare acceptance, quota consumption, and a real
 rescheduling transaction have **not** been validated. Site markup/response changes

@@ -5,6 +5,7 @@ import ctypes
 import multiprocessing
 import os
 import re
+import time
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
@@ -19,6 +20,7 @@ AUTH_HOST = "atlasauth.b2clogin.com"
 DAY_ROUTE = "get-family-consular-schedule-days"
 ENTRY_ROUTE = "get-family-consular-schedule-entries"
 SUBMIT_ROUTE = "reschedule-consular-appointments-for-family"
+MAX_CLICK_WAITS = {"enter_reschedule": 1, "load_dates": 2, "prepare_slot": 4, "submit": 1}
 
 # Observe only normal scheduling responses. No direct API calls or token capture.
 OBSERVER = r"""
@@ -105,12 +107,15 @@ def retry_seconds(value):
 
 
 class SiteBrowser:
-    def __init__(self, driver, config):
+    def __init__(self, driver, config, sleep=None, on_click_wait=None):
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import Select, WebDriverWait
         self.driver, self.config = driver, config
         self.By, self.Select, self.Wait = By, Select, WebDriverWait
         self.family_ids = None
+        self.post_login_ready = False
+        self.sleep = time.sleep if sleep is None else sleep
+        self.on_click_wait = on_click_wait
         driver.set_page_load_timeout(config.page_timeout)
         driver.set_script_timeout(15)
         self._timezone()
@@ -133,6 +138,7 @@ class SiteBrowser:
             raise SafetyError(message) from exc
 
     def open(self):
+        self.post_login_ready = False
         self.driver.get(SIGN_IN)
         self._timezone()
 
@@ -184,6 +190,7 @@ class SiteBrowser:
         return {"state": "unknown"}
 
     def login(self):
+        self.post_login_ready = False
         if self.inspect()["state"] != "login" or urlparse(self.driver.current_url).netloc != AUTH_HOST:
             raise SafetyError("Login form or authentication origin changed.")
         for selector, value in (("#signInName", self.config.username), ("#password", self.config.password)):
@@ -193,6 +200,7 @@ class SiteBrowser:
         self.visible("#continue")[0].click()
 
     def answer_questions(self):
+        self.post_login_ready = False
         info = self.inspect()
         if info["state"] != "questions" or urlparse(self.driver.current_url).netloc != AUTH_HOST:
             raise SafetyError("Security-question form or authentication origin changed.")
@@ -233,7 +241,7 @@ class SiteBrowser:
         self.driver.uc_gui_click_captcha(retry=False, blind=False)
         return {"attempted": True}
 
-    def enter_reschedule(self):
+    def _home_link(self):
         if self.inspect()["state"] != "home":
             raise SafetyError("Expected authenticated home page.")
         cards = self.driver.find_elements(
@@ -247,10 +255,26 @@ class SiteBrowser:
         link = self.visible("#reschedule_appointment")[0]
         if not reschedule_url(link.get_attribute("href")):
             raise SafetyError("Home-page reschedule link is unexpected.")
+        return link
+
+    def _pause_before_click(self, action):
+        if not self.post_login_ready:
+            raise SafetyError("Post-login actions require a validated visa home page first.")
+        if self.on_click_wait is not None:
+            self.on_click_wait(action, self.config.click_wait_seconds)
+        if self.config.click_wait_seconds:
+            self.sleep(self.config.click_wait_seconds)
+
+    def enter_reschedule(self):
+        self._home_link()
+        self.post_login_ready = True
         self._timezone()
-        link.click()
+        self._pause_before_click("RESCHEDULE")
+        self._home_link().click()
 
     def _context(self):
+        if not self.post_login_ready:
+            raise SafetyError("Scheduling actions require a validated visa home page first.")
         state = self.inspect()["state"]
         if state != "schedule":
             raise SafetyError("Rescheduling page is not ready; reauthentication may be required.")
@@ -283,6 +307,23 @@ class SiteBrowser:
         if old != expected:
             raise SafetyError("Existing appointment differs from configuration; reconcile before continuing.")
 
+    def _booking_context(self, day):
+        if not self.config.auto_booking or not self.config.priority(parse_day(day)):
+            raise SafetyError("Date selection is disabled or outside preferred ranges.")
+        self._context()
+        if self.Select(self.visible("#post_select")[0]).first_selected_option.get_attribute("value") != POST_ID:
+            raise SafetyError("Selected post changed.")
+
+    def _select_with_pause(self, selector, value, action, day=None):
+        check = self._context if day is None else lambda: self._booking_context(day)
+        check()
+        self._pause_before_click(action)
+        check()
+        controls = self.visible(selector)
+        if len(controls) != 1:
+            raise SafetyError("Selection control changed while waiting.")
+        self.Select(controls[0]).select_by_value(value)
+
     def load_dates(self):
         self._wait(lambda: self.visible("#gm_select label"), "Applicant list did not load.")
         self._context()
@@ -296,8 +337,8 @@ class SiteBrowser:
         self._wait(lambda: any(option.get_attribute("value") == POST_ID for option in select.options),
                    "Wuhan is not offered for this application.")
         # Reselect through the normal UI, without refreshing the tracked page.
-        select.select_by_value("")
-        select.select_by_value(POST_ID)
+        self._select_with_pause("#post_select", "", "POST_CLEAR")
+        self._select_with_pause("#post_select", POST_ID, "POST_WUHAN")
 
         def loaded():
             self.inspect()
@@ -312,23 +353,25 @@ class SiteBrowser:
         return sorted({parse_day(value).isoformat() for value in result["days"]})
 
     def prepare_slot(self, day):
-        if not self.config.auto_booking or not self.config.priority(parse_day(day)):
-            raise SafetyError("Date selection is disabled or outside preferred ranges.")
-        self._context()
-        if self.Select(self.visible("#post_select")[0]).first_selected_option.get_attribute("value") != POST_ID:
-            raise SafetyError("Selected post changed.")
+        self._booking_context(day)
         requested = parse_day(day)
         years = self.visible("#datepicker .ui-datepicker-year")
         months = self.visible("#datepicker .ui-datepicker-month")
         if not years or not months or years[0].tag_name != "select" or months[0].tag_name != "select":
             raise SafetyError("Calendar month/year navigation is unavailable.")
-        self.Select(years[0]).select_by_value(str(requested.year))
-        self.Select(self.visible("#datepicker select.ui-datepicker-month")[0]).select_by_value(
-            str(requested.month - 1))
+        self._select_with_pause("#datepicker select.ui-datepicker-year", str(requested.year),
+                                "CALENDAR_YEAR", day)
+        self._select_with_pause("#datepicker select.ui-datepicker-month", str(requested.month - 1),
+                                "CALENDAR_MONTH", day)
         locator = (
             f"#datepicker td.greenday[data-handler='selectDay'][data-year='{requested.year}']"
             f"[data-month='{requested.month - 1}'] a[data-date='{requested.day}']"
         )
+        targets = self.visible(locator)
+        if len(targets) != 1:
+            return None
+        self._pause_before_click("PREFERRED_DATE")
+        self._booking_context(day)
         targets = self.visible(locator)
         if len(targets) != 1:
             return None
@@ -347,6 +390,23 @@ class SiteBrowser:
             raise SafetyError("Unrecognized time-slot response.")
         if observation["entries"] == 0:
             return None
+        if self._first_available_slot(day) is None:
+            return None
+        self._pause_before_click("TIME_SLOT")
+        self._booking_context(day)
+        available = self._first_available_slot(day)
+        if available is None:
+            return None
+        slot, radio = available
+        radio.click()
+        self.preflight(slot)
+        return slot
+
+    def _first_available_slot(self, day):
+        selection = self._selection()
+        if (selection["day"] != day or selection["requestDay"] != day
+                or selection["post"] != POST_ID):
+            raise SafetyError("Selected date/post changed before time-slot selection.")
         for radio in self.visible("#time_select input[name='schedule-entries']"):
             row = radio.find_element(self.By.XPATH, "./ancestor::tr")
             cells = row.find_elements(self.By.TAG_NAME, "td")
@@ -360,23 +420,24 @@ class SiteBrowser:
             except (TypeError, ValueError) as exc:
                 raise SafetyError("Unrecognized slot capacity.") from exc
             if radio.is_enabled() and capacity >= len(self.config.applicants):
-                radio.click()
                 slot = Slot(day, time_text, radio.get_attribute("value"), capacity)
-                self.preflight(slot)
-                return slot
+                return slot, radio
         return None
 
-    def preflight(self, slot):
-        if not self.config.auto_booking or not self.config.priority(parse_day(slot.day)):
-            raise SafetyError("Submission is disabled or date is not preferred.")
-        self._context()
-        data = self.driver.execute_script("""
+    def _selection(self):
+        return self.driver.execute_script("""
             let d = jQuery("#datepicker").datepicker("getDate");
             let day = d ? [d.getFullYear(), String(d.getMonth()+1).padStart(2,"0"),
                            String(d.getDate()).padStart(2,"0")].join("-") : null;
             return {day:day, entry:String(jsdata.Num || ""), post:jQuery("#post_select").val(),
                     requestDay: jsdata.Date ? new Date(jsdata.Date).toISOString().slice(0,10) : null};
         """)
+
+    def preflight(self, slot):
+        if not self.config.auto_booking or not self.config.priority(parse_day(slot.day)):
+            raise SafetyError("Submission is disabled or date is not preferred.")
+        self._context()
+        data = self._selection()
         if data != {"day": slot.day, "entry": slot.entry, "post": POST_ID, "requestDay": slot.day}:
             raise SafetyError("Selected date/entry/post differs from the planned submission.")
         selected = [item for item in self.visible("#time_select input[name='schedule-entries']")
@@ -394,6 +455,8 @@ class SiteBrowser:
         return True
 
     def submit(self, slot):
+        self.preflight(slot)
+        self._pause_before_click("SUBMIT")
         self.preflight(slot)
         self.driver.execute_script("""
             sessionStorage.removeItem("visaWatchOutcome");
@@ -426,7 +489,11 @@ def _worker(connection, config, ready):
         ready.wait()
         from seleniumbase import Driver
         driver = Driver(uc=True, headless=False, page_load_strategy="eager")
-        browser = SiteBrowser(driver, config)
+        browser = SiteBrowser(
+            driver, config,
+            on_click_wait=lambda action, seconds: connection.send(
+                ("click_wait", {"action": action, "seconds": seconds})),
+        )
         connection.send(("ok", None))
         while True:
             method, args = connection.recv()
@@ -547,6 +614,10 @@ class BrowserPort:
                     kind, value = self.connection.recv()
                 except EOFError as exc:
                     raise WorkerLost("Browser worker stopped unexpectedly.") from exc
+                if kind == "click_wait":
+                    self.runtime.logs.event("CLICK_WAIT", target_action=value["action"],
+                                            delay_seconds=value["seconds"])
+                    continue
                 if kind == "blocked":
                     raise AccessBlocked(*value)
                 if kind == "error":
@@ -562,7 +633,10 @@ class BrowserPort:
         self.runtime.logs.event(method.upper(), "started")
         try:
             self.connection.send((method, args))
-            result = self._receive(timeout or self.config.page_timeout + 20)
+            if timeout is None:
+                timeout = (self.config.page_timeout + 20
+                           + MAX_CLICK_WAITS.get(method, 0) * self.config.click_wait_seconds)
+            result = self._receive(timeout)
         except (EOFError, BrokenPipeError, OSError) as exc:
             self.runtime.logs.event(method.upper(), "fail", errorDetails="Browser transport failed.")
             raise WorkerLost("Browser transport failed.") from exc
